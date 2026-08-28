@@ -1,13 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
     model::{ChannelId, GuildId, UserId},
-    voice::{
-        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceRendezvous,
-        VoiceRendezvousStatus,
-    },
+    voice::{VoiceConnectionInfo, VoiceRendezvous, VoiceRendezvousStatus},
 };
+use sonoryn::media::{Track, TrackResolver};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -15,7 +13,13 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
-use crate::gateway_control::{GatewayControl, VoiceJoinResult, VoiceLeaveResult};
+use crate::{
+    gateway_control::{
+        GatewayControl, SkipTrackResult, TrackEnqueueResult, VoiceJoinResult, VoiceLeaveResult,
+    },
+    player::PlayerDirectory,
+    voice_worker::{VoiceWorkerCommand, VoiceWorkerEvent, VoiceWorkerStopReason, run_voice_worker},
+};
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 const VOICE_COMMAND_CAPACITY: usize = 16;
@@ -34,41 +38,21 @@ struct VoiceWorkerHandle {
     commands: mpsc::Sender<VoiceWorkerCommand>,
 }
 
-#[derive(Debug)]
-enum VoiceWorkerCommand {
-    Shutdown,
-}
-
-#[derive(Debug)]
-pub(crate) enum VoiceWorkerStopReason {
-    Requested,
-    ConnectFailed(String),
-    VoiceFailed(String),
-}
-
-#[derive(Debug)]
-pub(crate) enum VoiceWorkerEvent {
-    JoinTimedOut {
-        guild_id: GuildId,
-        request_id: u64,
-    },
-    Stopped {
-        guild_id: GuildId,
-        generation: u64,
-        reason: VoiceWorkerStopReason,
-    },
-}
-
 pub(crate) struct VoiceManager {
     pending: HashMap<GuildId, PendingJoin>,
     workers: HashMap<GuildId, VoiceWorkerHandle>,
     worker_events: mpsc::Sender<VoiceWorkerEvent>,
     tasks: JoinSet<()>,
+    players: PlayerDirectory,
+    resolver: Arc<dyn TrackResolver>,
     next_id: u64,
 }
 
 impl VoiceManager {
-    pub(crate) fn new() -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
+    pub(crate) fn new(
+        players: PlayerDirectory,
+        resolver: Arc<dyn TrackResolver>,
+    ) -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
         let (worker_events, receiver) = mpsc::channel(VOICE_EVENT_CAPACITY);
         (
             Self {
@@ -76,6 +60,8 @@ impl VoiceManager {
                 workers: HashMap::new(),
                 worker_events,
                 tasks: JoinSet::new(),
+                players,
+                resolver,
                 next_id: 0,
             },
             receiver,
@@ -99,6 +85,16 @@ impl VoiceManager {
             }
             GatewayControl::LeaveVoice { guild_id, response } => {
                 self.leave_voice(guild_id, response, gateway).await;
+            }
+            GatewayControl::EnqueueTrack {
+                guild_id,
+                track,
+                response,
+            } => {
+                self.enqueue_track(guild_id, track, response).await;
+            }
+            GatewayControl::SkipTrack { guild_id, response } => {
+                self.skip_track(guild_id, response).await;
             }
         }
         self.reap_tasks();
@@ -225,6 +221,16 @@ impl VoiceManager {
             }
             GatewayControl::LeaveVoice { response, .. } => {
                 let _ = response.send(VoiceLeaveResult::Failed(
+                    "Sonoryn is shutting down.".to_owned(),
+                ));
+            }
+            GatewayControl::EnqueueTrack { response, .. } => {
+                let _ = response.send(TrackEnqueueResult::Failed(
+                    "Sonoryn is shutting down.".to_owned(),
+                ));
+            }
+            GatewayControl::SkipTrack { response, .. } => {
+                let _ = response.send(SkipTrackResult::Failed(
                     "Sonoryn is shutting down.".to_owned(),
                 ));
             }
@@ -364,6 +370,43 @@ impl VoiceManager {
         }
     }
 
+    async fn enqueue_track(
+        &mut self,
+        guild_id: GuildId,
+        track: Track,
+        response: oneshot::Sender<TrackEnqueueResult>,
+    ) {
+        let Some(worker) = self.workers.get(&guild_id) else {
+            let _ = response.send(TrackEnqueueResult::NotConnected);
+            return;
+        };
+        let commands = worker.commands.clone();
+        let command = VoiceWorkerCommand::Enqueue { track, response };
+        if let Err(error) = commands.send(command).await
+            && let VoiceWorkerCommand::Enqueue { response, .. } = error.0
+        {
+            let _ = response.send(TrackEnqueueResult::Failed(
+                "The guild voice worker is unavailable.".to_owned(),
+            ));
+        }
+    }
+
+    async fn skip_track(&mut self, guild_id: GuildId, response: oneshot::Sender<SkipTrackResult>) {
+        let Some(worker) = self.workers.get(&guild_id) else {
+            let _ = response.send(SkipTrackResult::NotConnected);
+            return;
+        };
+        let commands = worker.commands.clone();
+        let command = VoiceWorkerCommand::Skip { response };
+        if let Err(error) = commands.send(command).await
+            && let VoiceWorkerCommand::Skip { response } = error.0
+        {
+            let _ = response.send(SkipTrackResult::Failed(
+                "The guild voice worker is unavailable.".to_owned(),
+            ));
+        }
+    }
+
     fn start_worker(&mut self, guild_id: GuildId, pending: PendingJoin, info: VoiceConnectionInfo) {
         let generation = self.next_id();
         let (commands, receiver) = mpsc::channel(VOICE_COMMAND_CAPACITY);
@@ -385,6 +428,8 @@ impl VoiceManager {
             receiver,
             pending.response,
             worker_events,
+            self.players.clone(),
+            Arc::clone(&self.resolver),
         ));
     }
 
@@ -405,101 +450,6 @@ impl VoiceManager {
 enum RendezvousOutcome {
     Ready(VoiceConnectionInfo),
     ServerUnavailable,
-}
-
-async fn run_voice_worker(
-    guild_id: GuildId,
-    generation: u64,
-    channel_id: ChannelId,
-    info: VoiceConnectionInfo,
-    mut commands: mpsc::Receiver<VoiceWorkerCommand>,
-    response: oneshot::Sender<VoiceJoinResult>,
-    worker_events: mpsc::Sender<VoiceWorkerEvent>,
-) {
-    let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
-    tokio::pin!(connect);
-
-    let mut session = tokio::select! {
-        result = &mut connect => {
-            match result {
-                Ok(session) => session,
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = response.send(VoiceJoinResult::Failed(format!(
-                        "Failed to establish the Discord voice session: {message}"
-                    )));
-                    send_stopped(
-                        &worker_events,
-                        guild_id,
-                        generation,
-                        VoiceWorkerStopReason::ConnectFailed(message),
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-        _ = commands.recv() => {
-            let _ = response.send(VoiceJoinResult::Cancelled);
-            send_stopped(
-                &worker_events,
-                guild_id,
-                generation,
-                VoiceWorkerStopReason::Requested,
-            )
-            .await;
-            return;
-        }
-    };
-
-    let _ = response.send(VoiceJoinResult::Joined { channel_id });
-    info!(
-        guild_id = guild_id.get(),
-        channel_id = channel_id.get(),
-        "DAVE voice session connected"
-    );
-
-    let reason = loop {
-        tokio::select! {
-            command = commands.recv() => {
-                match command {
-                    Some(VoiceWorkerCommand::Shutdown) | None => {
-                        break VoiceWorkerStopReason::Requested;
-                    }
-                }
-            }
-            event = session.next_event() => {
-                if let Err(error) = event {
-                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
-                }
-            }
-        }
-    };
-
-    if let Err(error) = session.shutdown().await {
-        warn!(
-            guild_id = guild_id.get(),
-            error = %error,
-            "failed to gracefully close Discord voice session"
-        );
-    }
-
-    send_stopped(&worker_events, guild_id, generation, reason).await;
-}
-
-async fn send_stopped(
-    worker_events: &mpsc::Sender<VoiceWorkerEvent>,
-    guild_id: GuildId,
-    generation: u64,
-    reason: VoiceWorkerStopReason,
-) {
-    let _ = worker_events
-        .send(VoiceWorkerEvent::Stopped {
-            guild_id,
-            generation,
-            reason,
-        })
-        .await;
 }
 
 async fn disconnect_gateway_voice(gateway: &mut GatewayConnection, guild_id: GuildId) {

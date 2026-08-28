@@ -1,9 +1,11 @@
 mod commands;
 mod gateway_control;
+mod player;
 mod state;
 mod voice_manager;
+mod voice_worker;
 
-use std::{env, io};
+use std::{env, io, sync::Arc};
 
 use gloam_commands::{DispatchOutcome, Framework, Registration};
 use gloamwire::{
@@ -11,11 +13,14 @@ use gloamwire::{
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
     model::{GuildId, UserId},
 };
+use sonoryn::media::{TrackResolver, YtDlpResolver};
 use tokio::{sync::mpsc, task::JoinSet};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::{commands::command_list, state::AppState, voice_manager::VoiceManager};
+use crate::{
+    commands::command_list, player::PlayerDirectory, state::AppState, voice_manager::VoiceManager,
+};
 
 type MainResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const GATEWAY_CONTROL_CAPACITY: usize = 64;
@@ -35,8 +40,11 @@ async fn main() -> MainResult<()> {
     let mut gateway = GatewayConnection::connect(config).await?;
 
     let (gateway_control, mut gateway_controls) = mpsc::channel(GATEWAY_CONTROL_CAPACITY);
-    let (mut voice_manager, mut voice_events) = VoiceManager::new();
-    let state = AppState::new(gateway_control);
+    let players = PlayerDirectory::new();
+    let resolver: Arc<dyn TrackResolver> = Arc::new(YtDlpResolver::new());
+    let (mut voice_manager, mut voice_events) =
+        VoiceManager::new(players.clone(), Arc::clone(&resolver));
+    let state = AppState::new(gateway_control, players, resolver);
     let framework = Framework::builder(state.clone())
         .commands(command_list())
         .registration(registration)

@@ -1,4 +1,5 @@
 use gloamwire::model::{ChannelId, GuildId};
+use sonoryn::media::Track;
 use tokio::sync::oneshot;
 
 pub(crate) enum GatewayControl {
@@ -10,6 +11,15 @@ pub(crate) enum GatewayControl {
     LeaveVoice {
         guild_id: GuildId,
         response: oneshot::Sender<VoiceLeaveResult>,
+    },
+    EnqueueTrack {
+        guild_id: GuildId,
+        track: Track,
+        response: oneshot::Sender<TrackEnqueueResult>,
+    },
+    SkipTrack {
+        guild_id: GuildId,
+        response: oneshot::Sender<SkipTrackResult>,
     },
 }
 
@@ -26,6 +36,21 @@ pub(crate) enum VoiceJoinResult {
 pub(crate) enum VoiceLeaveResult {
     Left { channel_id: ChannelId },
     CancelledJoin { channel_id: ChannelId },
+    NotConnected,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TrackEnqueueResult {
+    Accepted { position: usize },
+    NotConnected,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkipTrackResult {
+    Skipped { title: String },
+    NothingPlaying,
     NotConnected,
     Failed(String),
 }
