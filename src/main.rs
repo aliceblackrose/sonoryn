@@ -19,8 +19,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    commands::command_list, player::PlayerDirectory, state::AppState,
-    voice_manager::VoiceManager,
+    commands::command_list, player::PlayerDirectory, state::AppState, voice_manager::VoiceManager,
 };
 
 type MainResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
