@@ -18,9 +18,7 @@ use crate::{
         GatewayControl, SkipTrackResult, TrackEnqueueResult, VoiceJoinResult, VoiceLeaveResult,
     },
     player::PlayerDirectory,
-    voice_worker::{
-        VoiceWorkerCommand, VoiceWorkerEvent, VoiceWorkerStopReason, run_voice_worker,
-    },
+    voice_worker::{VoiceWorkerCommand, VoiceWorkerEvent, VoiceWorkerStopReason, run_voice_worker},
 };
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -393,11 +391,7 @@ impl VoiceManager {
         }
     }
 
-    async fn skip_track(
-        &mut self,
-        guild_id: GuildId,
-        response: oneshot::Sender<SkipTrackResult>,
-    ) {
+    async fn skip_track(&mut self, guild_id: GuildId, response: oneshot::Sender<SkipTrackResult>) {
         let Some(worker) = self.workers.get(&guild_id) else {
             let _ = response.send(SkipTrackResult::NotConnected);
             return;
