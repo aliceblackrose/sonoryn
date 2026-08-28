@@ -6,8 +6,7 @@ use super::{PlayableMedia, ResolvedTrack, Track, TrackRequest};
 
 /// Boxed resolver future used to keep [`TrackResolver`] object-safe without an
 /// async-trait runtime dependency.
-pub type ResolveFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, ResolveError>> + Send + 'a>>;
+pub type ResolveFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ResolveError>> + Send + 'a>>;
 
 #[derive(Debug, Error)]
 pub enum ResolveError {
