@@ -6,9 +6,7 @@ use sonoryn::media::{RequestedBy, Track, TrackRequest};
 use tokio::sync::oneshot;
 
 use crate::{
-    gateway_control::{
-        GatewayControl, SkipTrackResult, TrackEnqueueResult, VoiceJoinResult,
-    },
+    gateway_control::{GatewayControl, SkipTrackResult, TrackEnqueueResult, VoiceJoinResult},
     player::{PlaybackState, PlayerSnapshot},
     state::AppState,
 };
@@ -56,7 +54,8 @@ pub(crate) async fn play(
     let resolved = match ctx.data().resolver.resolve(&request).await {
         Ok(resolved) => resolved,
         Err(error) => {
-            ctx.reply(format!("I couldn't resolve that track: {error}")).await?;
+            ctx.reply(format!("I couldn't resolve that track: {error}"))
+                .await?;
             return Ok(());
         }
     };
@@ -86,7 +85,8 @@ pub(crate) async fn play(
         .await
         .is_err()
     {
-        ctx.reply("The Gateway control loop is unavailable.").await?;
+        ctx.reply("The Gateway control loop is unavailable.")
+            .await?;
         return Ok(());
     }
 
@@ -124,7 +124,8 @@ pub(crate) async fn skip(ctx: Context<AppState>) -> Result<()> {
         .await
         .is_err()
     {
-        ctx.reply("The Gateway control loop is unavailable.").await?;
+        ctx.reply("The Gateway control loop is unavailable.")
+            .await?;
         return Ok(());
     }
 
@@ -148,7 +149,8 @@ pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
     };
 
     let Some(snapshot) = ctx.data().players.snapshot(guild_id).await else {
-        ctx.reply("There is no active player in this server.").await?;
+        ctx.reply("There is no active player in this server.")
+            .await?;
         return Ok(());
     };
 
@@ -216,7 +218,9 @@ async fn ensure_voice(
         .map_err(|_| "The Gateway control loop is unavailable.".to_owned())?;
 
     match result.await {
-        Ok(VoiceJoinResult::Joined { channel_id: connected })
+        Ok(VoiceJoinResult::Joined {
+            channel_id: connected,
+        })
         | Ok(VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
         }) if connected == channel_id => Ok(()),
