@@ -9,7 +9,10 @@ pub(crate) async fn ping(ctx: Context<AppState>) -> Result<()> {
     Ok(())
 }
 
-#[command(description = "Show the voice channel Sonoryn currently sees you in", guild_only)]
+#[command(
+    description = "Show the voice channel Sonoryn currently sees you in",
+    guild_only
+)]
 pub(crate) async fn voice(ctx: Context<AppState>) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
