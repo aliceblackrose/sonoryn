@@ -1,0 +1,17 @@
+[package]
+name = "sonoryn"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A protocol-first Discord music bot built on Gloamwire"
+repository = "https://github.com/aliceblackrose/sonoryn"
+
+[dependencies]
+gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "406cc74d94273d4e65293ca6efa914e5d75ae618", features = ["tracing"] }
+gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "5b5fa2c5877157422616ac96df14d176190ace83", features = ["cache", "tracing", "voice"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[lints.rust]
+unsafe_code = "forbid"
