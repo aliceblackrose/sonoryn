@@ -8,15 +8,15 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 
 - [x] Establish Sonoryn architecture and ownership boundaries.
 - [x] Define slash-command-only scope.
-- [ ] Add Rust 1.98 / Edition 2024 package scaffold.
-- [ ] Add formatting, clippy, test, and build CI.
+- [x] Add Rust 1.98 / Edition 2024 package scaffold.
+- [x] Add formatting, clippy, test, and build CI.
 - [ ] Add structured tracing without logging tokens, interaction tokens, source credentials, or raw media.
 
 ### Gloamwire / command framework compatibility
 
 - [ ] Advance `gloam-macro-commands` from its Phase-5 Gloamwire pin to the Gloamwire revision used by Sonoryn.
-- [ ] Verify `gloam-commands` tests and compile-fail fixtures against that revision.
-- [ ] Pin Sonoryn to exact compatible revisions of both repositories.
+- [x] Verify `gloam-commands` tests and compile-fail fixtures against that revision.
+- [x] Pin Sonoryn to exact compatible revisions of both repositories.
 - [ ] Add a dependency-tree CI check so two incompatible `gloamwire` versions cannot silently enter the build.
 
 ### DAVE prerequisite
@@ -32,9 +32,9 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 ## Phase 1 — Discord runtime and voice control
 
 - [ ] Create `AppState` with gateway control channel, voice-state index, and player manager.
-- [ ] Own a Gloamwire `GatewayConnection` directly with `GUILDS | GUILD_VOICE_STATES`.
-- [ ] Feed interactions into `Framework::dispatch(...)` from the same Gateway loop.
-- [ ] Synchronize slash commands after `READY` using the application ID from the event.
+- [x] Own a Gloamwire `GatewayConnection` directly with `GUILDS | GUILD_VOICE_STATES`.
+- [x] Feed interactions into `Framework::dispatch(...)` from the same Gateway loop.
+- [x] Synchronize slash commands after `READY` using the application ID from the event.
 - [ ] Track the current bot user ID and member voice states from typed Gateway events.
 - [ ] Route command-originated Gateway mutations through an `mpsc` control channel.
 - [ ] Implement voice join/leave rendezvous with `VoiceRendezvous`.
