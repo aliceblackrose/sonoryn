@@ -40,7 +40,7 @@ enum VoiceWorkerCommand {
 }
 
 #[derive(Debug)]
-enum VoiceWorkerStopReason {
+pub(crate) enum VoiceWorkerStopReason {
     Requested,
     ConnectFailed(String),
     VoiceFailed(String),
@@ -364,12 +364,7 @@ impl VoiceManager {
         }
     }
 
-    fn start_worker(
-        &mut self,
-        guild_id: GuildId,
-        pending: PendingJoin,
-        info: VoiceConnectionInfo,
-    ) {
+    fn start_worker(&mut self, guild_id: GuildId, pending: PendingJoin, info: VoiceConnectionInfo) {
         let generation = self.next_id();
         let (commands, receiver) = mpsc::channel(VOICE_COMMAND_CAPACITY);
         self.workers.insert(
