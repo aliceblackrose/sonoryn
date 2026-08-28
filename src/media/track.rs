@@ -170,7 +170,9 @@ mod tests {
 
     use gloamwire::model::UserId;
 
-    use super::{RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource};
+    use super::{
+        RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
+    };
 
     #[test]
     fn creates_durable_track_without_playable_media_state() {
