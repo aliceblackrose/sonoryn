@@ -3,11 +3,11 @@ mod state;
 
 use std::{env, io};
 
-use gloam_commands::{commands, DispatchOutcome, Framework, Registration};
+use gloam_commands::{DispatchOutcome, Framework, Registration, commands};
 use gloamwire::{
+    RestClient,
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
     model::GuildId,
-    RestClient,
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
