@@ -17,14 +17,14 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [ ] Advance `gloam-macro-commands` from its Phase-5 Gloamwire pin to the Gloamwire revision used by Sonoryn.
 - [x] Verify `gloam-commands` tests and compile-fail fixtures against that revision.
 - [x] Pin Sonoryn to exact compatible revisions of both repositories.
-- [ ] Add a dependency-tree CI check so two incompatible `gloamwire` versions cannot silently enter the build.
+- [x] Add a dependency-tree CI check so two incompatible `gloamwire` versions cannot silently enter the build.
 
 ### DAVE prerequisite
 
-- [ ] Complete Gloamwire's DAVE protocol-version negotiation.
-- [ ] Implement MLS session lifecycle behind a dedicated DAVE provider boundary.
-- [ ] Handle external sender package, key packages, proposals, commit/welcome, epoch prepare/execute, and transition readiness.
-- [ ] Implement DAVE encoded-audio frame protection before RTP packetization/transport encryption.
+- [x] Complete Gloamwire's DAVE protocol-version negotiation.
+- [x] Implement MLS session lifecycle behind a dedicated DAVE provider boundary.
+- [x] Handle external sender package, key packages, proposals, commit/welcome, epoch prepare/execute, and transition readiness.
+- [x] Implement DAVE encoded-audio frame protection before RTP packetization/transport encryption.
 - [ ] Ratchet sender keys and retain previous epoch receive keys for the protocol-defined transition window.
 - [ ] Add protocol fixtures for group creation, member join/remove, epoch change, recovery, and invalid messages.
 - [ ] Validate against a real Discord non-stage voice channel before considering Phase 0 complete.
@@ -35,15 +35,16 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Own a Gloamwire `GatewayConnection` directly with `GUILDS | GUILD_VOICE_STATES`.
 - [x] Feed interactions into `Framework::dispatch(...)` from the same Gateway loop.
 - [x] Synchronize slash commands after `READY` using the application ID from the event.
-- [ ] Track the current bot user ID and member voice states from typed Gateway events.
-- [ ] Route command-originated Gateway mutations through an `mpsc` control channel.
-- [ ] Implement voice join/leave rendezvous with `VoiceRendezvous`.
-- [ ] Start one dedicated voice worker per connected guild.
+- [x] Track the current bot user ID and member voice states from typed Gateway events.
+- [x] Route command-originated Gateway mutations through an `mpsc` control channel.
+- [x] Implement voice join/leave rendezvous with `VoiceRendezvous`.
+- [x] Start one dedicated voice worker per connected guild.
 - [ ] Add graceful shutdown for Gateway, players, voice sessions, and command tasks.
 
 ### Initial commands
 
-- [ ] `/leave`
+- [x] `/join`
+- [x] `/leave`
 - [ ] `/queue`
 - [ ] `/nowplaying`
 
