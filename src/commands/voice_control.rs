@@ -11,10 +11,7 @@ pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
     commands![join, leave]
 }
 
-#[command(
-    description = "Join your current voice channel",
-    guild_only
-)]
+#[command(description = "Join your current voice channel", guild_only)]
 pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
@@ -60,13 +57,19 @@ pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
 
     let message = match result.await {
         Ok(VoiceJoinResult::Joined { channel_id }) => {
-            format!("Connected to <#{}> with DAVE/E2EE enabled.", channel_id.get())
+            format!(
+                "Connected to <#{}> with DAVE/E2EE enabled.",
+                channel_id.get()
+            )
         }
         Ok(VoiceJoinResult::AlreadyConnected { channel_id }) => {
             format!("I am already connected to <#{}>.", channel_id.get())
         }
         Ok(VoiceJoinResult::InProgress { channel_id }) => {
-            format!("A voice join for <#{}> is already in progress.", channel_id.get())
+            format!(
+                "A voice join for <#{}> is already in progress.",
+                channel_id.get()
+            )
         }
         Ok(VoiceJoinResult::Cancelled) => "The voice join was cancelled.".to_owned(),
         Ok(VoiceJoinResult::Failed(error)) => error,
@@ -76,10 +79,7 @@ pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
     Ok(())
 }
 
-#[command(
-    description = "Disconnect Sonoryn from voice",
-    guild_only
-)]
+#[command(description = "Disconnect Sonoryn from voice", guild_only)]
 pub(crate) async fn leave(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
         ctx.reply_ephemeral("This command can only be used in a server.")
