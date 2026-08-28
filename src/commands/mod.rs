@@ -1,3 +1,3 @@
 mod diagnostics;
 
-pub(crate) use diagnostics::{ping, voice};
+pub(crate) use diagnostics::command_list;
