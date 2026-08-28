@@ -289,7 +289,7 @@ fn render_queue(snapshot: &PlayerSnapshot) -> String {
     for (index, track) in snapshot.queue.iter().take(QUEUE_PREVIEW_LIMIT).enumerate() {
         let line = format!("{}. {}\n", index + 1, track.metadata.title);
         if output.len() + line.len() > QUEUE_CONTENT_LIMIT {
-            output.push_str("…");
+            output.push('…');
             break;
         }
         output.push_str(&line);
