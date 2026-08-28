@@ -7,9 +7,7 @@ use gloamwire::{
         VoiceFramePacer, VoiceOpusFrame, VoiceSpeakingFlags,
     },
 };
-use sonoryn::media::{
-    EncodedOpusFrame, FfmpegOpusDecoder, FfmpegOpusStream, Track, TrackResolver,
-};
+use sonoryn::media::{EncodedOpusFrame, FfmpegOpusDecoder, FfmpegOpusStream, Track, TrackResolver};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -546,22 +544,20 @@ async fn apply_command(
             let _ = response.send(TrackEnqueueResult::Accepted { position });
             Ok(false)
         }
-        VoiceWorkerCommand::Skip { response } => {
-            match playback.skip(session).await {
-                Ok(Some(title)) => {
-                    let _ = response.send(SkipTrackResult::Skipped { title });
-                    Ok(false)
-                }
-                Ok(None) => {
-                    let _ = response.send(SkipTrackResult::NothingPlaying);
-                    Ok(false)
-                }
-                Err(error) => {
-                    let _ = response.send(SkipTrackResult::Failed(error.to_string()));
-                    Err(error)
-                }
+        VoiceWorkerCommand::Skip { response } => match playback.skip(session).await {
+            Ok(Some(title)) => {
+                let _ = response.send(SkipTrackResult::Skipped { title });
+                Ok(false)
             }
-        }
+            Ok(None) => {
+                let _ = response.send(SkipTrackResult::NothingPlaying);
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = response.send(SkipTrackResult::Failed(error.to_string()));
+                Err(error)
+            }
+        },
         VoiceWorkerCommand::Shutdown => Ok(true),
     }
 }
