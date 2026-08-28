@@ -3,11 +3,11 @@ mod state;
 
 use std::{env, io};
 
-use gloam_commands::{DispatchOutcome, Framework, Registration, commands};
+use gloam_commands::{commands, DispatchOutcome, Framework, Registration};
 use gloamwire::{
-    RestClient,
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
     model::GuildId,
+    RestClient,
 };
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
@@ -131,9 +131,8 @@ fn reap_command_tasks(tasks: &mut JoinSet<()>) {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("sonoryn=info,gloamwire=info,gloam_commands=info")
-    });
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("sonoryn=info,gloamwire=info,gloam_commands=info"));
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
