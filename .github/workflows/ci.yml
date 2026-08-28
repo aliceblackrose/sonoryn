@@ -24,6 +24,24 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Verify single Gloamwire dependency
+        run: |
+          cargo metadata --format-version 1 > /tmp/sonoryn-metadata.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata = json.loads(Path("/tmp/sonoryn-metadata.json").read_text())
+          packages = [package for package in metadata["packages"] if package["name"] == "gloamwire"]
+          identities = sorted({package["id"] for package in packages})
+          if len(identities) != 1:
+              raise SystemExit(
+                  "expected exactly one Gloamwire package identity, resolved: "
+                  + repr(identities)
+              )
+          print(f"Gloamwire dependency identity: {identities[0]}")
+          PY
+
       - name: Run tests
         run: cargo test --all-targets --all-features
 
