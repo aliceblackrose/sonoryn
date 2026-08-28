@@ -299,7 +299,10 @@ where
         let mut lacing = vec![0_u8; segment_count];
         self.reader.read_exact(&mut lacing).await?;
 
-        let payload_len = lacing.iter().map(|length| usize::from(*length)).sum::<usize>();
+        let payload_len = lacing
+            .iter()
+            .map(|length| usize::from(*length))
+            .sum::<usize>();
         if payload_len > MAX_OGG_PAGE_BYTES {
             return Err(DecodeError::InvalidOgg(
                 "Ogg page exceeded the protocol payload limit".to_owned(),
@@ -378,15 +381,26 @@ mod tests {
         let bytes = ogg_page(0x02, &[8, 8, 3], &payload);
         let mut reader = OggPacketReader::new(Cursor::new(bytes));
 
-        assert_eq!(reader.next_packet().await.expect("packet"), Some(b"OpusHead".to_vec()));
-        assert_eq!(reader.next_packet().await.expect("packet"), Some(b"OpusTags".to_vec()));
-        assert_eq!(reader.next_packet().await.expect("packet"), Some(vec![1, 2, 3]));
+        assert_eq!(
+            reader.next_packet().await.expect("packet"),
+            Some(b"OpusHead".to_vec())
+        );
+        assert_eq!(
+            reader.next_packet().await.expect("packet"),
+            Some(b"OpusTags".to_vec())
+        );
+        assert_eq!(
+            reader.next_packet().await.expect("packet"),
+            Some(vec![1, 2, 3])
+        );
         assert_eq!(reader.next_packet().await.expect("eof"), None);
     }
 
     #[tokio::test]
     async fn reconstructs_packet_continued_across_pages() {
-        let packet = (0..300).map(|value| (value % 251) as u8).collect::<Vec<_>>();
+        let packet = (0..300)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
         let mut bytes = ogg_page(0x02, &[255], &packet[..255]);
         bytes.extend(ogg_page(0x01, &[45], &packet[255..]));
         let mut reader = OggPacketReader::new(Cursor::new(bytes));
@@ -418,7 +432,10 @@ mod tests {
     fn ogg_page(header_type: u8, lacing: &[u8], payload: &[u8]) -> Vec<u8> {
         assert!(lacing.len() <= u8::MAX as usize);
         assert_eq!(
-            lacing.iter().map(|length| usize::from(*length)).sum::<usize>(),
+            lacing
+                .iter()
+                .map(|length| usize::from(*length))
+                .sum::<usize>(),
             payload.len()
         );
 
