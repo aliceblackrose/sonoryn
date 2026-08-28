@@ -3,7 +3,7 @@ mod state;
 
 use std::{env, io};
 
-use gloam_commands::{DispatchOutcome, Framework, Registration, commands};
+use gloam_commands::{DispatchOutcome, Framework, Registration};
 use gloamwire::{
     RestClient,
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
@@ -13,10 +13,7 @@ use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::{
-    commands::{ping, voice},
-    state::AppState,
-};
+use crate::{commands::command_list, state::AppState};
 
 type MainResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -36,7 +33,7 @@ async fn main() -> MainResult<()> {
 
     let state = AppState::new();
     let framework = Framework::builder(state.clone())
-        .commands(commands![ping, voice])
+        .commands(command_list())
         .registration(registration)
         .max_concurrent_commands(64)
         .build()?;
