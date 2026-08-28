@@ -288,11 +288,11 @@ mod tests {
         assert_eq!(resolved.source, TrackSource::YouTube);
         assert_eq!(resolved.metadata.title, "Song");
         assert_eq!(resolved.metadata.artist.as_deref(), Some("Artist"));
-        assert_eq!(resolved.metadata.duration, Some(Duration::from_millis(61_500)));
         assert_eq!(
-            resolved.locator,
-            "https://www.youtube.com/watch?v=abc"
+            resolved.metadata.duration,
+            Some(Duration::from_millis(61_500))
         );
+        assert_eq!(resolved.locator, "https://www.youtube.com/watch?v=abc");
     }
 
     #[test]
