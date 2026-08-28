@@ -53,7 +53,11 @@ impl PlayerDirectory {
     }
 
     pub(crate) async fn publish(&self, guild_id: GuildId, snapshot: PlayerSnapshot) {
-        self.inner.snapshots.write().await.insert(guild_id, snapshot);
+        self.inner
+            .snapshots
+            .write()
+            .await
+            .insert(guild_id, snapshot);
     }
 
     pub(crate) async fn remove(&self, guild_id: GuildId) {
