@@ -3,6 +3,10 @@ use gloamwire::model::UserId;
 
 use crate::state::AppState;
 
+pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
+    commands![ping, voice]
+}
+
 #[command(description = "Check whether Sonoryn is online")]
 pub(crate) async fn ping(ctx: Context<AppState>) -> Result<()> {
     ctx.reply("Sonoryn is online.").await?;
