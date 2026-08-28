@@ -220,16 +220,10 @@ async fn ensure_voice(
     match result.await {
         Ok(VoiceJoinResult::Joined {
             channel_id: connected,
-        })
-        | Ok(VoiceJoinResult::AlreadyConnected {
-            channel_id: connected,
-        }) if connected == channel_id => Ok(()),
+        }) => joined_channel_result(connected, channel_id),
         Ok(VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
-        }) => Err(format!(
-            "I'm already active in <#{}>. Join that channel to control playback.",
-            connected.get()
-        )),
+        }) => joined_channel_result(connected, channel_id),
         Ok(VoiceJoinResult::InProgress { channel_id }) => Err(format!(
             "A voice connection to <#{}> is already starting. Try `/play` again once it connects.",
             channel_id.get()
@@ -237,6 +231,20 @@ async fn ensure_voice(
         Ok(VoiceJoinResult::Cancelled) => Err("The voice join was cancelled.".to_owned()),
         Ok(VoiceJoinResult::Failed(error)) => Err(error),
         Err(_) => Err("The voice join task ended before returning a result.".to_owned()),
+    }
+}
+
+fn joined_channel_result(
+    connected: gloamwire::model::ChannelId,
+    requested: gloamwire::model::ChannelId,
+) -> std::result::Result<(), String> {
+    if connected == requested {
+        Ok(())
+    } else {
+        Err(format!(
+            "I'm already active in <#{}>. Join that channel to control playback.",
+            connected.get()
+        ))
     }
 }
 
@@ -320,11 +328,19 @@ fn format_duration(duration: Duration) -> String {
 mod tests {
     use std::time::Duration;
 
-    use super::format_duration;
+    use gloamwire::model::ChannelId;
+
+    use super::{format_duration, joined_channel_result};
 
     #[test]
     fn formats_track_durations() {
         assert_eq!(format_duration(Duration::from_secs(65)), "1:05");
         assert_eq!(format_duration(Duration::from_secs(3_661)), "1:01:01");
+    }
+
+    #[test]
+    fn join_result_rejects_a_different_connected_channel() {
+        assert!(joined_channel_result(ChannelId::new(2), ChannelId::new(2)).is_ok());
+        assert!(joined_channel_result(ChannelId::new(2), ChannelId::new(3)).is_err());
     }
 }
