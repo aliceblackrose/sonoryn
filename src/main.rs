@@ -117,7 +117,7 @@ fn registration_from_env() -> MainResult<Registration> {
             })?;
             Ok(Registration::Guild(GuildId::new(guild_id)))
         }
-        Err(env::VarError::NotPresent) => Ok(Registration::None),
+        Err(env::VarError::NotPresent) => Ok(Registration::Global),
         Err(error) => Err(Box::new(error)),
     }
 }
