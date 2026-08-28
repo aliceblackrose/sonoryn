@@ -1,7 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use gloamwire::model::{ChannelId, GuildId};
-use sonoryn::media::Track;
+use sonoryn::media::{Track, TrackId};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,9 +26,15 @@ pub(crate) struct PlayerSnapshot {
     pub(crate) queue: Vec<Track>,
 }
 
+#[derive(Default)]
+struct PlayerDirectoryInner {
+    snapshots: RwLock<HashMap<GuildId, PlayerSnapshot>>,
+    next_track_id: AtomicU64,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct PlayerDirectory {
-    inner: Arc<RwLock<HashMap<GuildId, PlayerSnapshot>>>,
+    inner: Arc<PlayerDirectoryInner>,
 }
 
 impl PlayerDirectory {
@@ -31,16 +43,21 @@ impl PlayerDirectory {
         Self::default()
     }
 
+    #[must_use]
+    pub(crate) fn next_track_id(&self) -> TrackId {
+        TrackId::new(self.inner.next_track_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     pub(crate) async fn snapshot(&self, guild_id: GuildId) -> Option<PlayerSnapshot> {
-        self.inner.read().await.get(&guild_id).cloned()
+        self.inner.snapshots.read().await.get(&guild_id).cloned()
     }
 
     pub(crate) async fn publish(&self, guild_id: GuildId, snapshot: PlayerSnapshot) {
-        self.inner.write().await.insert(guild_id, snapshot);
+        self.inner.snapshots.write().await.insert(guild_id, snapshot);
     }
 
     pub(crate) async fn remove(&self, guild_id: GuildId) {
-        self.inner.write().await.remove(&guild_id);
+        self.inner.snapshots.write().await.remove(&guild_id);
     }
 }
 
@@ -65,5 +82,12 @@ mod tests {
 
         directory.remove(guild_id).await;
         assert_eq!(directory.snapshot(guild_id).await, None);
+    }
+
+    #[test]
+    fn allocates_monotonic_track_ids() {
+        let directory = PlayerDirectory::new();
+        assert_eq!(directory.next_track_id().get(), 0);
+        assert_eq!(directory.next_track_id().get(), 1);
     }
 }
