@@ -125,7 +125,7 @@ fn bounded_stderr(stderr: &[u8]) -> String {
     let end = stderr.len().min(STDERR_LIMIT);
     let mut message = String::from_utf8_lossy(&stderr[..end]).trim().to_owned();
     if stderr.len() > STDERR_LIMIT {
-        message.push_str("…");
+        message.push('…');
     }
     if message.is_empty() {
         message = "backend returned a non-zero exit status without stderr".to_owned();
