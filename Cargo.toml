@@ -7,9 +7,9 @@ description = "A protocol-first Discord music bot built on Gloamwire"
 repository = "https://github.com/aliceblackrose/sonoryn"
 
 [dependencies]
-gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "406cc74d94273d4e65293ca6efa914e5d75ae618", features = ["tracing"] }
-gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "5b5fa2c5877157422616ac96df14d176190ace83", features = ["cache", "tracing", "voice"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "d55510f87051c28a6be71b62ef275155934c1edd", features = ["tracing"] }
+gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "a39239aa73803432339f3d31ba3626071593fcd9", features = ["cache", "dave-davey", "tracing", "voice"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
