@@ -104,7 +104,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Loop modes: off, track, queue.
 - [x] Queue pagination.
 - [ ] Playlist expansion with explicit item limits.
-- [ ] Previous/history behavior.
+- [x] Previous/history behavior.
 - [ ] Volume control with clipping-safe gain handling.
 
 ## Phase 5 — Reliability and observability
