@@ -8,7 +8,7 @@ repository = "https://github.com/aliceblackrose/sonoryn"
 
 [dependencies]
 gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "3bf89f40dee9f106b29d91ed8efa06c8ccf6955a", features = ["tracing"] }
-gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "ce7bedae12c255249d8823f5332f87566c7b363d", features = ["cache", "dave-davey", "tracing", "voice"] }
+gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "78d27b75f2f300be2f8daec7e51f2962bcd79dfd", features = ["cache", "dave-davey", "tracing", "voice"] }
 rand = "0.9"
 serde_json = "1"
 thiserror = "2"
