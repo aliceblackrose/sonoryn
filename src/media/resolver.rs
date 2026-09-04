@@ -38,6 +38,18 @@ pub enum ResolveError {
     InvalidMediaUrl,
 }
 
+impl ResolveError {
+    /// Whether repeating the source operation can reasonably recover without
+    /// changing configuration or user input.
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::TimedOut { .. } | Self::BackendFailed { .. } | Self::InvalidMediaUrl
+        )
+    }
+}
+
 /// Resolves user submissions into durable queue metadata and refreshes
 /// short-lived direct media information immediately before playback.
 pub trait TrackResolver: Send + Sync {
@@ -56,4 +68,34 @@ pub trait TrackResolver: Send + Sync {
     }
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{io, time::Duration};
+
+    use super::ResolveError;
+
+    #[test]
+    fn retry_classification_separates_transient_from_structural_failures() {
+        assert!(ResolveError::TimedOut {
+            backend: "fixture".to_owned(),
+            timeout: Duration::from_secs(1),
+        }
+        .is_retryable());
+        assert!(ResolveError::BackendFailed {
+            backend: "fixture".to_owned(),
+            message: "temporary network failure".to_owned(),
+        }
+        .is_retryable());
+        assert!(ResolveError::InvalidMediaUrl.is_retryable());
+
+        assert!(!ResolveError::Spawn {
+            backend: "fixture".to_owned(),
+            source: io::Error::new(io::ErrorKind::NotFound, "missing"),
+        }
+        .is_retryable());
+        assert!(!ResolveError::NoResults.is_retryable());
+        assert!(!ResolveError::MissingField { field: "title" }.is_retryable());
+    }
 }
