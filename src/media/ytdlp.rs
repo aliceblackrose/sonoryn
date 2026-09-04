@@ -372,7 +372,9 @@ mod tests {
     fn recognizes_bounded_youtube_search_targets() {
         assert!(is_search_target("ytsearch10:artist song"));
         assert!(is_search_target("ytsearch:artist song"));
-        assert!(!is_search_target("https://example.test/ytsearch10:artist song"));
+        assert!(!is_search_target(
+            "https://example.test/ytsearch10:artist song"
+        ));
         assert!(!is_search_target("ytsearch10:"));
     }
 
