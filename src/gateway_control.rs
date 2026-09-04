@@ -21,6 +21,7 @@ pub(crate) enum GatewayControl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaybackAction {
+    CheckContext,
     Wake,
     Skip,
     Pause,
