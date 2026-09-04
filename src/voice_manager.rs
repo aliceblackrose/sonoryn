@@ -750,7 +750,7 @@ async fn run_voice_worker(
                 if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
-                players.write().await.finish_current(guild_id, track_id);
+                players.write().await.complete_current(guild_id, track_id);
                 active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
             }
             VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
