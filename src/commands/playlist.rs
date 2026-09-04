@@ -37,7 +37,7 @@ pub(crate) async fn playlist(
             .await?;
         return Ok(());
     };
-    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
+    let Some(_) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
         ctx.reply_ephemeral("Join a voice channel first, then run `/playlist`.")
             .await?;
         return Ok(());
