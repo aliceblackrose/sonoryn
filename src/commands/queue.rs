@@ -1,5 +1,6 @@
 use gloam_commands::prelude::*;
 use gloamwire::model::{GuildId, UserId};
+use sonoryn::player::LoopMode;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -8,7 +9,7 @@ use crate::{
 };
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![shuffle]
+    commands![shuffle, loop_mode]
 }
 
 #[command(description = "Shuffle the queued tracks", guild_only)]
@@ -29,6 +30,55 @@ pub(crate) async fn shuffle(ctx: Context<AppState>) -> Result<()> {
     };
     ctx.reply_ephemeral(message).await?;
     Ok(())
+}
+
+#[command(
+    name = "loop",
+    description = "Show or change the playback loop mode",
+    guild_only
+)]
+pub(crate) async fn loop_mode(
+    ctx: Context<AppState>,
+    #[description = "Loop mode"]
+    #[choice(name = "Off", value = "off")]
+    #[choice(name = "Track", value = "track")]
+    #[choice(name = "Queue", value = "queue")]
+    mode: Option<String>,
+) -> Result<()> {
+    let Some(guild_id) = require_queue_control_context(&ctx).await? else {
+        return Ok(());
+    };
+
+    let current = if let Some(mode) = mode {
+        let mode = match mode.as_str() {
+            "off" => LoopMode::Off,
+            "track" => LoopMode::Track,
+            "queue" => LoopMode::Queue,
+            _ => {
+                ctx.reply_ephemeral("That loop mode is not supported.")
+                    .await?;
+                return Ok(());
+            }
+        };
+        let mut players = ctx.data().player_manager.write().await;
+        players.set_loop_mode(guild_id, mode);
+        mode
+    } else {
+        let players = ctx.data().player_manager.read().await;
+        players.loop_mode(guild_id)
+    };
+
+    ctx.reply_ephemeral(format!("Loop mode: **{}**.", loop_mode_name(current)))
+        .await?;
+    Ok(())
+}
+
+fn loop_mode_name(mode: LoopMode) -> &'static str {
+    match mode {
+        LoopMode::Off => "off",
+        LoopMode::Track => "track",
+        LoopMode::Queue => "queue",
+    }
 }
 
 async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option<GuildId>> {
@@ -113,4 +163,18 @@ fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserI
         .and_then(|member| member.user.as_ref())
         .map(|user| user.id)
         .or_else(|| interaction.user.as_ref().map(|user| user.id))
+}
+
+#[cfg(test)]
+mod tests {
+    use sonoryn::player::LoopMode;
+
+    use super::loop_mode_name;
+
+    #[test]
+    fn loop_mode_names_are_stable() {
+        assert_eq!(loop_mode_name(LoopMode::Off), "off");
+        assert_eq!(loop_mode_name(LoopMode::Track), "track");
+        assert_eq!(loop_mode_name(LoopMode::Queue), "queue");
+    }
 }

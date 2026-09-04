@@ -5,6 +5,14 @@ use rand::seq::SliceRandom;
 
 use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LoopMode {
+    #[default]
+    Off,
+    Track,
+    Queue,
+}
+
 /// Read-only copy of one guild's playback state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlayerSnapshot {
@@ -28,6 +36,7 @@ impl PlayerSnapshot {
 struct GuildPlayer {
     now_playing: Option<Track>,
     queue: VecDeque<Track>,
+    loop_mode: LoopMode,
 }
 
 impl GuildPlayer {
@@ -71,6 +80,21 @@ impl PlayerManager {
             .get(&guild_id)
             .map(GuildPlayer::snapshot)
             .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn loop_mode(&self, guild_id: GuildId) -> LoopMode {
+        self.players
+            .get(&guild_id)
+            .map(|player| player.loop_mode)
+            .unwrap_or_default()
+    }
+
+    pub fn set_loop_mode(&mut self, guild_id: GuildId, mode: LoopMode) -> LoopMode {
+        let player = self.players.entry(guild_id).or_default();
+        let previous = player.loop_mode;
+        player.loop_mode = mode;
+        previous
     }
 
     /// Converts resolver output into a durable track and appends it to the guild
@@ -172,6 +196,35 @@ impl PlayerManager {
         matches
     }
 
+    /// Completes the current track while applying the guild's loop policy.
+    ///
+    /// Natural completion uses this path. Manual skip and decoder failures use
+    /// `finish_current` so a broken or intentionally skipped track cannot become
+    /// an accidental infinite loop.
+    pub fn complete_current(&mut self, guild_id: GuildId, track_id: TrackId) -> bool {
+        let Some(player) = self.players.get_mut(&guild_id) else {
+            return false;
+        };
+        let matches = player
+            .now_playing
+            .as_ref()
+            .is_some_and(|track| track.id == track_id);
+        if !matches {
+            return false;
+        }
+
+        let track = player
+            .now_playing
+            .take()
+            .expect("current track was checked above");
+        match player.loop_mode {
+            LoopMode::Off => {}
+            LoopMode::Track => player.queue.push_front(track),
+            LoopMode::Queue => player.queue.push_back(track),
+        }
+        true
+    }
+
     /// Removes all playback state for a guild and returns what was removed.
     pub fn clear(&mut self, guild_id: GuildId) -> PlayerSnapshot {
         self.players
@@ -196,7 +249,7 @@ mod tests {
 
     use gloamwire::model::{GuildId, UserId};
 
-    use super::PlayerManager;
+    use super::{LoopMode, PlayerManager};
     use crate::media::{
         RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
     };
@@ -281,6 +334,47 @@ mod tests {
 
         assert!(!players.finish_current(guild_id, TrackId::new(99)));
         assert!(players.snapshot(guild_id).now_playing.is_some());
+
+        assert!(players.finish_current(guild_id, TrackId::new(1)));
+        assert!(players.snapshot(guild_id).is_idle());
+    }
+
+    #[test]
+    fn natural_completion_respects_loop_modes() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(2, "second"));
+        players.start_next(guild_id).expect("current track");
+
+        assert_eq!(players.loop_mode(guild_id), LoopMode::Off);
+        players.set_loop_mode(guild_id, LoopMode::Track);
+        assert!(players.complete_current(guild_id, TrackId::new(1)));
+        assert_eq!(
+            players.start_next(guild_id).expect("looped track").id,
+            TrackId::new(1)
+        );
+
+        players.set_loop_mode(guild_id, LoopMode::Queue);
+        assert!(players.complete_current(guild_id, TrackId::new(1)));
+        let snapshot = players.snapshot(guild_id);
+        assert_eq!(
+            snapshot
+                .queue
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
+            [TrackId::new(2), TrackId::new(1)]
+        );
+    }
+
+    #[test]
+    fn manual_finish_bypasses_loop_policy() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "first"));
+        players.start_next(guild_id).expect("current track");
+        players.set_loop_mode(guild_id, LoopMode::Track);
 
         assert!(players.finish_current(guild_id, TrackId::new(1)));
         assert!(players.snapshot(guild_id).is_idle());
