@@ -42,6 +42,13 @@ struct VoiceWorkerHandle {
     commands: mpsc::Sender<VoiceWorkerCommand>,
 }
 
+struct VoiceWorkerServices {
+    worker_events: mpsc::Sender<VoiceWorkerEvent>,
+    players: Arc<RwLock<PlayerManager>>,
+    resolver: Arc<dyn TrackResolver>,
+    decoder: FfmpegOpusDecoder,
+}
+
 enum VoiceWorkerCommand {
     Shutdown,
     Playback {
@@ -416,12 +423,11 @@ impl VoiceManager {
         if let Err(error) = commands
             .send(VoiceWorkerCommand::Playback { action, response })
             .await
+            && let VoiceWorkerCommand::Playback { response, .. } = error.0
         {
-            if let VoiceWorkerCommand::Playback { response, .. } = error.0 {
-                let _ = response.send(PlaybackControlResult::Failed(
-                    "The guild voice worker is unavailable.".to_owned(),
-                ));
-            }
+            let _ = response.send(PlaybackControlResult::Failed(
+                "The guild voice worker is unavailable.".to_owned(),
+            ));
         }
     }
 
@@ -437,7 +443,12 @@ impl VoiceManager {
             },
         );
 
-        let worker_events = self.worker_events.clone();
+        let services = VoiceWorkerServices {
+            worker_events: self.worker_events.clone(),
+            players: self.players.clone(),
+            resolver: self.resolver.clone(),
+            decoder: self.decoder.clone(),
+        };
         self.tasks.spawn(run_voice_worker(
             guild_id,
             generation,
@@ -445,10 +456,7 @@ impl VoiceManager {
             info,
             receiver,
             pending.response,
-            worker_events,
-            self.players.clone(),
-            self.resolver.clone(),
-            self.decoder.clone(),
+            services,
         ));
     }
 
@@ -530,11 +538,14 @@ async fn run_voice_worker(
     info: VoiceConnectionInfo,
     mut commands: mpsc::Receiver<VoiceWorkerCommand>,
     response: oneshot::Sender<VoiceJoinResult>,
-    worker_events: mpsc::Sender<VoiceWorkerEvent>,
-    players: Arc<RwLock<PlayerManager>>,
-    resolver: Arc<dyn TrackResolver>,
-    decoder: FfmpegOpusDecoder,
+    services: VoiceWorkerServices,
 ) {
+    let VoiceWorkerServices {
+        worker_events,
+        players,
+        resolver,
+        decoder,
+    } = services;
     let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
     tokio::pin!(connect);
 
