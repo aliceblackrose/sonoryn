@@ -120,24 +120,15 @@ pub(crate) async fn playlist(
         for track in resolved {
             let item_request = TrackRequest::new(track.metadata.webpage_url.clone())
                 .unwrap_or_else(|_| request.clone());
-            let (_, position) = players.enqueue_resolved(
-                guild_id,
-                item_request,
-                RequestedBy::new(user_id),
-                track,
-            );
+            let (_, position) =
+                players.enqueue_resolved(guild_id, item_request, RequestedBy::new(user_id), track);
             first_position.get_or_insert(position);
         }
         first_position.unwrap_or(1)
     };
 
-    let message = match playback_control(
-        ctx.data(),
-        guild_id,
-        channel_id,
-        PlaybackAction::Wake,
-    )
-    .await
+    let message = match playback_control(ctx.data(), guild_id, channel_id, PlaybackAction::Wake)
+        .await
     {
         PlaybackControlResult::Accepted => format!(
             "Added **{added}** track{} from the playlist; first queue position was **{first_position}**.",
