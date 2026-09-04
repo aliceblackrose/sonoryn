@@ -604,9 +604,7 @@ async fn run_voice_worker(
                 if let Some(playback) = active.take() {
                     let speaking = playback.speaking;
                     playback.cancel();
-                    if speaking
-                        && let Err(error) = flush_silence(&mut session).await
-                    {
+                    if speaking && let Err(error) = flush_silence(&mut session).await {
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
@@ -620,13 +618,8 @@ async fn run_voice_worker(
                 let result = match action {
                     PlaybackAction::Wake => {
                         if active.is_none() {
-                            active = start_next_playback(
-                                guild_id,
-                                &players,
-                                &resolver,
-                                &decoder,
-                            )
-                            .await;
+                            active =
+                                start_next_playback(guild_id, &players, &resolver, &decoder).await;
                         }
                         if active.is_some() {
                             PlaybackControlResult::Accepted
@@ -642,9 +635,7 @@ async fn run_voice_worker(
                         let track_id = playback.track_id;
                         let speaking = playback.speaking;
                         playback.cancel();
-                        if speaking
-                            && let Err(error) = flush_silence(&mut session).await
-                        {
+                        if speaking && let Err(error) = flush_silence(&mut session).await {
                             break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                         }
                         players.write().await.finish_current(guild_id, track_id);
@@ -673,9 +664,7 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking
-                                && let Err(error) = flush_silence(&mut session).await
-                            {
+                            if speaking && let Err(error) = flush_silence(&mut session).await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -719,9 +708,7 @@ async fn run_voice_worker(
                 };
                 let track_id = playback.track_id;
                 let speaking = playback.speaking;
-                if speaking
-                    && let Err(error) = flush_silence(&mut session).await
-                {
+                if speaking && let Err(error) = flush_silence(&mut session).await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
@@ -738,9 +725,7 @@ async fn run_voice_worker(
                     failure = ?failure,
                     "track playback failed; advancing queue"
                 );
-                if speaking
-                    && let Err(error) = flush_silence(&mut session).await
-                {
+                if speaking && let Err(error) = flush_silence(&mut session).await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
@@ -756,9 +741,7 @@ async fn run_voice_worker(
                     guild_id = guild_id.get(),
                     "decoder task ended without a terminal event; advancing queue"
                 );
-                if speaking
-                    && let Err(error) = flush_silence(&mut session).await
-                {
+                if speaking && let Err(error) = flush_silence(&mut session).await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
