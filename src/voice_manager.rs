@@ -10,7 +10,7 @@ use gloamwire::{
 };
 use sonoryn::{
     media::{EncodedOpusFrame, FfmpegOpusDecoder, TrackResolver},
-    player::PlayerManager,
+    player::{LoopMode, PlayerManager},
 };
 use tokio::{
     sync::{RwLock, mpsc, oneshot},
@@ -19,8 +19,11 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
-use crate::gateway_control::{
-    GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult, VoiceLeaveResult,
+use crate::{
+    gateway_control::{
+        GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult, VoiceLeaveResult,
+    },
+    history::HistoryManager,
 };
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -45,6 +48,7 @@ struct VoiceWorkerHandle {
 struct VoiceWorkerServices {
     worker_events: mpsc::Sender<VoiceWorkerEvent>,
     players: Arc<RwLock<PlayerManager>>,
+    history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
 }
@@ -84,6 +88,7 @@ pub(crate) struct VoiceManager {
     worker_events: mpsc::Sender<VoiceWorkerEvent>,
     tasks: JoinSet<()>,
     players: Arc<RwLock<PlayerManager>>,
+    history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
     next_id: u64,
@@ -92,6 +97,7 @@ pub(crate) struct VoiceManager {
 impl VoiceManager {
     pub(crate) fn new(
         players: Arc<RwLock<PlayerManager>>,
+        history: Arc<RwLock<HistoryManager>>,
         resolver: Arc<dyn TrackResolver>,
     ) -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
         let (worker_events, receiver) = mpsc::channel(VOICE_EVENT_CAPACITY);
@@ -102,6 +108,7 @@ impl VoiceManager {
                 worker_events,
                 tasks: JoinSet::new(),
                 players,
+                history,
                 resolver,
                 decoder: FfmpegOpusDecoder::new(),
                 next_id: 0,
@@ -461,6 +468,7 @@ impl VoiceManager {
         let services = VoiceWorkerServices {
             worker_events: self.worker_events.clone(),
             players: self.players.clone(),
+            history: self.history.clone(),
             resolver: self.resolver.clone(),
             decoder: self.decoder.clone(),
         };
@@ -559,6 +567,7 @@ async fn run_voice_worker(
     let VoiceWorkerServices {
         worker_events,
         players,
+        history,
         resolver,
         decoder,
     } = services;
@@ -660,18 +669,61 @@ async fn run_voice_worker(
                             PlaybackControlResult::NothingPlaying
                         }
                     }
+                    PlaybackAction::Previous => {
+                        let previous = {
+                            let history = history.read().await;
+                            history.snapshot(guild_id).last().cloned()
+                        };
+                        let Some(previous) = previous else {
+                            PlaybackControlResult::NothingPlaying
+                        };
+
+                        let current = {
+                            let players = players.read().await;
+                            players.snapshot(guild_id).now_playing
+                        };
+                        if let Some(playback) = active.take() {
+                            let speaking = playback.speaking;
+                            playback.cancel();
+                            if speaking && let Err(error) = session.finish_speaking().await {
+                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                            }
+                        }
+
+                        {
+                            let mut players = players.write().await;
+                            if let Some(current) = current {
+                                if players.finish_current(guild_id, current.id) {
+                                    let position = players.enqueue(guild_id, current);
+                                    let _ = players.move_queued(guild_id, position - 1, 0);
+                                }
+                            }
+                            let position = players.enqueue(guild_id, previous);
+                            let _ = players.move_queued(guild_id, position - 1, 0);
+                        }
+                        let _ = history.write().await.pop_latest(guild_id);
+                        active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                        PlaybackControlResult::Accepted
+                    }
                     PlaybackAction::Skip => {
                         let Some(playback) = active.take() else {
                             let _ = response.send(PlaybackControlResult::NothingPlaying);
                             continue;
                         };
                         let track_id = playback.track_id;
+                        let current = {
+                            let players = players.read().await;
+                            players.snapshot(guild_id).now_playing
+                        };
                         let speaking = playback.speaking;
                         playback.cancel();
                         if speaking && let Err(error) = session.finish_speaking().await {
                             break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                         }
-                        players.write().await.finish_current(guild_id, track_id);
+                        let finished = players.write().await.finish_current(guild_id, track_id);
+                        if finished && let Some(track) = current {
+                            history.write().await.push(guild_id, track);
+                        }
                         active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
                         PlaybackControlResult::Accepted
                     }
@@ -746,11 +798,18 @@ async fn run_voice_worker(
                     continue;
                 };
                 let track_id = playback.track_id;
+                let (current, loop_mode) = {
+                    let players = players.read().await;
+                    (players.snapshot(guild_id).now_playing, players.loop_mode(guild_id))
+                };
                 let speaking = playback.speaking;
                 if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
-                players.write().await.complete_current(guild_id, track_id);
+                let completed = players.write().await.complete_current(guild_id, track_id);
+                if completed && loop_mode != LoopMode::Track && let Some(track) = current {
+                    history.write().await.push(guild_id, track);
+                }
                 active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
             }
             VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
