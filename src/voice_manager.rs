@@ -9,7 +9,7 @@ use gloamwire::{
     },
 };
 use sonoryn::{
-    media::{EncodedOpusFrame, FfmpegOpusDecoder, TrackResolver},
+    media::{EncodedOpusFrame, FfmpegDecodeOptions, FfmpegOpusDecoder, TrackResolver},
     player::{LoopMode, PlayerManager},
 };
 use tokio::{
@@ -31,6 +31,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
+const OPUS_FRAME_DURATION: Duration = Duration::from_millis(20);
 
 struct PendingJoin {
     request_id: u64,
@@ -510,7 +511,9 @@ enum VoiceWorkerInput {
 }
 
 struct ActivePlayback {
+    track: sonoryn::media::Track,
     track_id: sonoryn::media::TrackId,
+    position: Duration,
     events: mpsc::Receiver<DecoderEvent>,
     task: JoinHandle<()>,
     pacer: VoiceFramePacer,
@@ -523,16 +526,28 @@ impl ActivePlayback {
         track: sonoryn::media::Track,
         resolver: Arc<dyn TrackResolver>,
         decoder: FfmpegOpusDecoder,
+        start_at: Duration,
+        volume_percent: u8,
+        paused: bool,
     ) -> Self {
         let track_id = track.id;
         let (events, receiver) = mpsc::channel(DECODER_FRAME_CAPACITY);
-        let task = tokio::spawn(run_decoder(track, resolver, decoder, events));
+        let task = tokio::spawn(run_decoder(
+            track.clone(),
+            resolver,
+            decoder,
+            events,
+            start_at,
+            volume_percent,
+        ));
         Self {
+            track,
             track_id,
+            position: start_at,
             events: receiver,
             task,
             pacer: VoiceFramePacer::default(),
-            paused: false,
+            paused,
             speaking: false,
         }
     }
@@ -616,6 +631,7 @@ async fn run_voice_worker(
     );
 
     let mut active: Option<ActivePlayback> = None;
+    let mut volume_percent = 100_u8;
     let mut idle_deadline = Some(Instant::now() + IDLE_TIMEOUT);
     let reason = loop {
         let decoder_enabled = active.as_ref().is_some_and(|playback| !playback.paused);
@@ -660,8 +676,14 @@ async fn run_voice_worker(
                     PlaybackAction::CheckContext => PlaybackControlResult::Accepted,
                     PlaybackAction::Wake => {
                         if active.is_none() {
-                            active =
-                                start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                            active = start_next_playback(
+                                guild_id,
+                                &players,
+                                &resolver,
+                                &decoder,
+                                volume_percent,
+                            )
+                            .await;
                         }
                         if active.is_some() {
                             PlaybackControlResult::Accepted
@@ -693,17 +715,24 @@ async fn run_voice_worker(
 
                         {
                             let mut players = players.write().await;
-                            if let Some(current) = current {
-                                if players.finish_current(guild_id, current.id) {
-                                    let position = players.enqueue(guild_id, current);
-                                    let _ = players.move_queued(guild_id, position - 1, 0);
-                                }
+                            if let Some(current) = current
+                                && players.finish_current(guild_id, current.id)
+                            {
+                                let position = players.enqueue(guild_id, current);
+                                let _ = players.move_queued(guild_id, position - 1, 0);
                             }
                             let position = players.enqueue(guild_id, previous);
                             let _ = players.move_queued(guild_id, position - 1, 0);
                         }
                         let _ = history.write().await.pop_latest(guild_id);
-                        active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                        active = start_next_playback(
+                            guild_id,
+                            &players,
+                            &resolver,
+                            &decoder,
+                            volume_percent,
+                        )
+                        .await;
                         PlaybackControlResult::Accepted
                     }
                     PlaybackAction::Skip => {
@@ -725,8 +754,74 @@ async fn run_voice_worker(
                         if finished && let Some(track) = current {
                             history.write().await.push(guild_id, track);
                         }
-                        active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                        active = start_next_playback(
+                            guild_id,
+                            &players,
+                            &resolver,
+                            &decoder,
+                            volume_percent,
+                        )
+                        .await;
                         PlaybackControlResult::Accepted
+                    }
+                    PlaybackAction::Seek { position_millis } => {
+                        let Some(playback) = active.take() else {
+                            let _ = response.send(PlaybackControlResult::NothingPlaying);
+                            continue;
+                        };
+                        let position = Duration::from_millis(position_millis);
+                        if playback
+                            .track
+                            .metadata
+                            .duration
+                            .is_some_and(|duration| position >= duration)
+                        {
+                            active = Some(playback);
+                            PlaybackControlResult::Failed(
+                                "The seek position is at or beyond the track duration.".to_owned(),
+                            )
+                        } else {
+                            let track = playback.track.clone();
+                            let paused = playback.paused;
+                            let speaking = playback.speaking;
+                            playback.cancel();
+                            if speaking && let Err(error) = session.finish_speaking().await {
+                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                            }
+                            active = Some(ActivePlayback::spawn(
+                                track,
+                                resolver.clone(),
+                                decoder.clone(),
+                                position,
+                                volume_percent,
+                                paused,
+                            ));
+                            PlaybackControlResult::Accepted
+                        }
+                    }
+                    PlaybackAction::Volume { percent } => {
+                        volume_percent = percent.min(100);
+                        if let Some(playback) = active.take() {
+                            let track = playback.track.clone();
+                            let position = playback.position;
+                            let paused = playback.paused;
+                            let speaking = playback.speaking;
+                            playback.cancel();
+                            if speaking && let Err(error) = session.finish_speaking().await {
+                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                            }
+                            active = Some(ActivePlayback::spawn(
+                                track,
+                                resolver.clone(),
+                                decoder.clone(),
+                                position,
+                                volume_percent,
+                                paused,
+                            ));
+                            PlaybackControlResult::Accepted
+                        } else {
+                            PlaybackControlResult::NothingPlaying
+                        }
                     }
                     PlaybackAction::Pause => match active.as_mut() {
                         Some(playback) if playback.paused => PlaybackControlResult::AlreadyPaused,
@@ -793,6 +888,7 @@ async fn run_voice_worker(
                 if let Err(error) = session.send_opus_frame(frame).await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
+                playback.position = playback.position.saturating_add(OPUS_FRAME_DURATION);
             }
             VoiceWorkerInput::Decoder(Some(DecoderEvent::Finished)) => {
                 let Some(playback) = active.take() else {
@@ -817,7 +913,14 @@ async fn run_voice_worker(
                 {
                     history.write().await.push(guild_id, track);
                 }
-                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                active = start_next_playback(
+                    guild_id,
+                    &players,
+                    &resolver,
+                    &decoder,
+                    volume_percent,
+                )
+                .await;
             }
             VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
                 let Some(playback) = active.take() else {
@@ -834,7 +937,14 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
-                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                active = start_next_playback(
+                    guild_id,
+                    &players,
+                    &resolver,
+                    &decoder,
+                    volume_percent,
+                )
+                .await;
             }
             VoiceWorkerInput::Decoder(None) => {
                 let Some(playback) = active.take() else {
@@ -850,7 +960,14 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
-                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                active = start_next_playback(
+                    guild_id,
+                    &players,
+                    &resolver,
+                    &decoder,
+                    volume_percent,
+                )
+                .await;
             }
             VoiceWorkerInput::IdleTimeout => {
                 idle_deadline = None;
@@ -867,7 +984,14 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::IdleTimedOut;
                 }
 
-                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                active = start_next_playback(
+                    guild_id,
+                    &players,
+                    &resolver,
+                    &decoder,
+                    volume_percent,
+                )
+                .await;
             }
         }
 
@@ -899,12 +1023,16 @@ async fn start_next_playback(
     players: &Arc<RwLock<PlayerManager>>,
     resolver: &Arc<dyn TrackResolver>,
     decoder: &FfmpegOpusDecoder,
+    volume_percent: u8,
 ) -> Option<ActivePlayback> {
     let track = players.write().await.start_next(guild_id)?;
     Some(ActivePlayback::spawn(
         track,
         resolver.clone(),
         decoder.clone(),
+        Duration::ZERO,
+        volume_percent,
+        false,
     ))
 }
 
@@ -917,6 +1045,8 @@ async fn run_decoder(
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
     events: mpsc::Sender<DecoderEvent>,
+    start_at: Duration,
+    volume_percent: u8,
 ) {
     let media = match resolver.resolve_media(&track).await {
         Ok(media) => media,
@@ -928,7 +1058,10 @@ async fn run_decoder(
         }
     };
 
-    let mut stream = match decoder.open(&media) {
+    let options = FfmpegDecodeOptions::new()
+        .with_start_at(start_at)
+        .with_volume_percent(volume_percent);
+    let mut stream = match decoder.open_with_options(&media, options) {
         Ok(stream) => stream,
         Err(_) => {
             let _ = events
