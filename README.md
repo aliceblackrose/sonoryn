@@ -6,14 +6,21 @@ The project is intentionally protocol-first. Sonoryn does not introduce a second
 
 ## Status
 
-**Phase 0 — architecture and dependency alignment.**
+**Working-prototype stage.**
 
-Two upstream requirements currently gate normal voice-channel playback:
+The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves URLs/free-text searches with `yt-dlp`, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path.
 
-1. `gloam-macro-commands` is pinned to an older Gloamwire revision and must be synchronized with the Gloamwire revision Sonoryn uses so command/runtime types come from one crate instance.
-2. Discord requires DAVE/E2EE for normal voice channels. Gloamwire already has the Voice Gateway/UDP/RTP/Opus transport boundary, but its DAVE/MLS media layer is still unfinished.
+Implemented prototype commands:
 
-Until both are resolved, Sonoryn will not claim normal voice playback as functional.
+- `/play <query>` — resolve and enqueue a URL or search query and automatically join the invoker's voice channel.
+- `/skip` — cancel the current decoder and advance the FIFO queue.
+- `/pause` and `/resume` — pause/resume frame consumption without blocking Voice Gateway/DAVE processing.
+- `/stop` — cancel playback and clear the guild queue.
+- `/queue` — inspect the current and queued tracks.
+- `/nowplaying` — inspect the active track.
+- `/join` and `/leave` — explicitly manage the guild voice session.
+
+The remaining roadmap work is reliability, richer controls, persistence, sharding, and real-world Discord validation/hardening; the current target is a development prototype, not a production music service.
 
 ## Design rules
 
@@ -24,36 +31,72 @@ Until both are resolved, Sonoryn will not claim normal voice playback as functio
 - Per-guild playback runs as an actor/task with explicit commands rather than shared mutable playback state scattered across command handlers.
 - Source resolution, decoding, DAVE media protection, RTP transport, and queue policy remain separate layers.
 - No bespoke cryptography in Sonoryn. DAVE belongs in Gloamwire behind a dedicated implementation boundary.
+- Direct/signed media URLs are ephemeral and never stored in queue state.
 
-## Planned commands
+## Prototype data flow
 
-The initial user-facing surface is deliberately small:
+```text
+/play <query>
+    │
+    ├─ TrackResolver (yt-dlp metadata)
+    │      └─ durable Track metadata / public locator
+    │
+    ├─ per-guild PlayerManager FIFO
+    │
+    └─ Voice worker
+           ├─ yt-dlp direct-media refresh
+           ├─ bounded FFmpeg decoder task
+           ├─ 48 kHz stereo / 20 ms Opus
+           ├─ VoiceFramePacer
+           └─ Gloamwire DaveVoiceSession
+                  └─ DAVE → RTP → transport AEAD → Discord UDP
+```
 
-- `/play <query>` — resolve and enqueue a track, joining the invoker when necessary.
-- `/skip` — skip the current track.
-- `/pause` and `/resume` — control playback.
-- `/stop` — stop playback and clear the queue.
-- `/queue` — inspect the guild queue.
-- `/nowplaying` — inspect the active track.
-- `/leave` — disconnect and tear down the guild player.
+The decoder task communicates with the voice worker through a two-frame bounded channel. This keeps FFmpeg backpressured while the voice worker continues polling Voice Gateway heartbeats and DAVE events.
 
-Later phases add seek, loop modes, shuffle, remove/move, filters, playlists, history, favorites, and persistence.
+## Requirements
+
+Install:
+
+- Rust 1.98 (the included `rust-toolchain.toml` selects it);
+- `yt-dlp` available on `PATH`;
+- FFmpeg with `libopus` support available as `ffmpeg` on `PATH`;
+- a Discord application/bot with access to the target guild and permission to connect/speak in the target voice channel.
+
+Configure:
+
+```text
+DISCORD_TOKEN=...
+SONORYN_DEV_GUILD_ID=...   # strongly recommended during development
+RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
+```
+
+`SONORYN_DEV_GUILD_ID` makes slash-command registration guild-scoped so changes appear quickly. Without it, Sonoryn registers commands globally.
+
+## Run the prototype
+
+```bash
+cargo run
+```
+
+Then join a normal voice channel and use, for example:
+
+```text
+/play never gonna give you up
+/play https://www.youtube.com/watch?v=dQw4w9WgXcQ
+/queue
+/pause
+/resume
+/skip
+/stop
+/leave
+```
+
+Sonoryn resolves direct media immediately before decoding. A queued track therefore stores its public source locator and metadata, not a short-lived CDN URL.
 
 ## Architecture
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for runtime ownership and data flow, and [`ROADMAP.md`](ROADMAP.md) for implementation phases.
-
-## Configuration
-
-The intended baseline environment is:
-
-```text
-DISCORD_TOKEN=...
-SONORYN_DEV_GUILD_ID=...   # optional; fast guild command registration while developing
-RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
-```
-
-Additional source/decoder configuration will be introduced with the audio pipeline rather than pre-committing Sonoryn to a resolver backend before playback transport is ready.
 
 ## License
 
