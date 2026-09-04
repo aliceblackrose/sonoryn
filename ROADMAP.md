@@ -10,7 +10,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Define slash-command-only scope.
 - [x] Add Rust 1.98 / Edition 2024 package scaffold.
 - [x] Add formatting, clippy, test, and build CI.
-- [ ] Add structured tracing without logging tokens, interaction tokens, source credentials, or raw media.
+- [x] Add structured tracing without logging tokens, interaction tokens, source credentials, or raw media.
 
 ### Gloamwire / command framework compatibility
 
@@ -31,7 +31,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 
 ## Phase 1 — Discord runtime and voice control
 
-- [ ] Create `AppState` with gateway control channel, voice-state index, and player manager.
+- [x] Create `AppState` with gateway control channel, voice-state index, and player manager.
 - [x] Own a Gloamwire `GatewayConnection` directly with `GUILDS | GUILD_VOICE_STATES`.
 - [x] Feed interactions into `Framework::dispatch(...)` from the same Gateway loop.
 - [x] Synchronize slash commands after `READY` using the application ID from the event.
@@ -39,37 +39,37 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Route command-originated Gateway mutations through an `mpsc` control channel.
 - [x] Implement voice join/leave rendezvous with `VoiceRendezvous`.
 - [x] Start one dedicated voice worker per connected guild.
-- [ ] Add graceful shutdown for Gateway, players, voice sessions, and command tasks.
+- [x] Add graceful shutdown for Gateway, players, voice sessions, and command tasks.
 
 ### Initial commands
 
 - [x] `/join`
 - [x] `/leave`
-- [ ] `/queue`
-- [ ] `/nowplaying`
+- [x] `/queue`
+- [x] `/nowplaying`
 
 ## Phase 2 — Audio source and media pipeline
 
 ### Track model
 
-- [ ] Define stable `Track`, `TrackId`, `TrackSource`, and `RequestedBy` models.
-- [ ] Separate a submitted query from the resolved playable media URL.
-- [ ] Preserve title, artist/uploader, duration, artwork, webpage URL, and source metadata.
+- [x] Define stable `Track`, `TrackId`, `TrackSource`, and `RequestedBy` models.
+- [x] Separate a submitted query from the resolved playable media URL.
+- [x] Preserve title, artist/uploader, duration, artwork, webpage URL, and source metadata.
 
 ### Resolver
 
-- [ ] Define an async `TrackResolver` trait.
-- [ ] Implement the first resolver backend without coupling command handlers to it.
-- [ ] Support URLs and free-text search.
-- [ ] Add bounded resolution timeouts and cancellation.
-- [ ] Never place short-lived signed media URLs in persistent storage.
+- [x] Define an async `TrackResolver` trait.
+- [x] Implement the first resolver backend without coupling command handlers to it.
+- [x] Support URLs and free-text search.
+- [x] Add bounded resolution timeouts and cancellation.
+- [x] Never place short-lived signed media URLs in persistent storage.
 
 ### Decoder / encoder
 
-- [ ] Produce Discord-compatible 48 kHz stereo Opus frames.
-- [ ] Use 20 ms frames as the baseline (`960` RTP timestamp samples).
+- [x] Produce Discord-compatible 48 kHz stereo Opus frames.
+- [x] Use 20 ms frames as the baseline (`960` RTP timestamp samples).
 - [ ] Keep decode/encode work off the Gateway task.
-- [ ] Bound decoder buffers to prevent unbounded memory growth.
+- [x] Bound decoder buffers to prevent unbounded memory growth.
 - [ ] Cleanly cancel decoder subprocesses/tasks when tracks are skipped.
 
 ### Voice send path
