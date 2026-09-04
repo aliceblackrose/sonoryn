@@ -2,16 +2,16 @@ use std::{sync::Arc, time::Instant};
 
 use tokio::sync::Semaphore;
 
-use crate::metrics::Metrics;
+use crate::{metrics::Metrics, redaction::redact_sensitive};
 
 use super::{
-    PlayableMedia, ResolveFuture, ResolvedTrack, Track, TrackRequest, TrackResolver,
+    PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track, TrackRequest, TrackResolver,
 };
 
 /// Default process-wide cap for concurrent resolver/backend operations.
 pub const MAX_RESOLUTION_CONCURRENCY: usize = 8;
 
-/// Decorates a resolver with bounded concurrency and latency/failure metrics.
+/// Decorates a resolver with bounded concurrency, redaction, and latency/failure metrics.
 pub struct ObservedResolver {
     inner: Arc<dyn TrackResolver>,
     metrics: Arc<Metrics>,
@@ -42,17 +42,14 @@ impl ObservedResolver {
         }
     }
 
-    async fn instrument<T>(
-        &self,
-        future: ResolveFuture<'_, T>,
-    ) -> Result<T, super::ResolveError> {
+    async fn instrument<T>(&self, future: ResolveFuture<'_, T>) -> Result<T, ResolveError> {
         let _permit = self
             .permits
             .acquire()
             .await
             .expect("resolver semaphore is never closed");
         let started = Instant::now();
-        let result = future.await;
+        let result = future.await.map_err(sanitize_error);
         self.metrics.record_resolve_latency(started.elapsed());
         if result.is_err() {
             self.metrics.increment_failures();
@@ -79,6 +76,16 @@ impl TrackResolver for ObservedResolver {
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {
         Box::pin(async move { self.instrument(self.inner.resolve_media(track)).await })
+    }
+}
+
+fn sanitize_error(error: ResolveError) -> ResolveError {
+    match error {
+        ResolveError::BackendFailed { backend, message } => ResolveError::BackendFailed {
+            backend,
+            message: redact_sensitive(&message),
+        },
+        error => error,
     }
 }
 
@@ -135,6 +142,23 @@ mod tests {
         }
     }
 
+    struct LeakyResolver;
+
+    impl TrackResolver for LeakyResolver {
+        fn resolve<'a>(&'a self, _request: &'a TrackRequest) -> ResolveFuture<'a, ResolvedTrack> {
+            Box::pin(async {
+                Err(ResolveError::BackendFailed {
+                    backend: "fixture".to_owned(),
+                    message: "failed https://cdn.example.test/media?sig=super-secret".to_owned(),
+                })
+            })
+        }
+
+        fn resolve_media<'a>(&'a self, _track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {
+            Box::pin(async { Err(ResolveError::NoResults) })
+        }
+    }
+
     #[tokio::test]
     async fn bounds_concurrent_resolution_and_records_failures() {
         let inner = Arc::new(BlockingResolver::new());
@@ -158,5 +182,21 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.resolves, 6);
         assert_eq!(snapshot.failures, 6);
+    }
+
+    #[tokio::test]
+    async fn sanitizes_backend_errors_before_returning_them() {
+        let resolver = ObservedResolver::new(
+            Arc::new(LeakyResolver),
+            Arc::new(Metrics::new()),
+            1,
+        );
+        let request = TrackRequest::new("fixture").expect("request");
+
+        let error = resolver.resolve(&request).await.expect_err("resolver error");
+        let message = error.to_string();
+        assert!(message.contains("[REDACTED_URL]"));
+        assert!(!message.contains("super-secret"));
+        assert!(!message.contains("cdn.example.test"));
     }
 }
