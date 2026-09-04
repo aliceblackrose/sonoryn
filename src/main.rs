@@ -81,7 +81,10 @@ async fn main() -> MainResult<()> {
             event = gateway.next_event() => {
                 let event = event?;
 
-                if matches!(event, GatewayEvent::Reconnect | GatewayEvent::InvalidSession { .. }) {
+                if matches!(
+                    &event,
+                    GatewayEvent::Reconnect | GatewayEvent::InvalidSession { .. }
+                ) {
                     state.metrics.increment_reconnects();
                 }
 
