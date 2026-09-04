@@ -15,7 +15,7 @@ use sonoryn::{
 use tokio::{
     sync::{RwLock, mpsc, oneshot},
     task::{JoinHandle, JoinSet},
-    time::sleep,
+    time::{Instant, sleep, sleep_until},
 };
 use tracing::{error, info, warn};
 
@@ -24,6 +24,7 @@ use crate::gateway_control::{
 };
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
@@ -59,6 +60,7 @@ enum VoiceWorkerCommand {
 #[derive(Debug)]
 pub(crate) enum VoiceWorkerStopReason {
     Requested,
+    IdleTimedOut,
     ConnectFailed(String),
     VoiceFailed(String),
 }
@@ -227,6 +229,14 @@ impl VoiceManager {
                 match reason {
                     VoiceWorkerStopReason::Requested => {
                         info!(guild_id = guild_id.get(), "voice worker stopped");
+                    }
+                    VoiceWorkerStopReason::IdleTimedOut => {
+                        info!(
+                            guild_id = guild_id.get(),
+                            idle_seconds = IDLE_TIMEOUT.as_secs(),
+                            "voice worker disconnected after idle timeout"
+                        );
+                        disconnect_gateway_voice(gateway, guild_id).await;
                     }
                     VoiceWorkerStopReason::ConnectFailed(error) => {
                         warn!(
@@ -488,6 +498,7 @@ enum VoiceWorkerInput {
     Command(Option<VoiceWorkerCommand>),
     Voice(VoiceResult<VoiceGatewayEvent>),
     Decoder(Option<DecoderEvent>),
+    IdleTimeout,
 }
 
 struct ActivePlayback {
@@ -596,8 +607,11 @@ async fn run_voice_worker(
     );
 
     let mut active: Option<ActivePlayback> = None;
+    let mut idle_deadline = Some(Instant::now() + IDLE_TIMEOUT);
     let reason = loop {
         let decoder_enabled = active.as_ref().is_some_and(|playback| !playback.paused);
+        let idle = active.is_none();
+        let deadline = idle_deadline.unwrap_or_else(|| Instant::now() + IDLE_TIMEOUT);
         let input = if decoder_enabled {
             tokio::select! {
                 command = commands.recv() => VoiceWorkerInput::Command(command),
@@ -605,11 +619,13 @@ async fn run_voice_worker(
                 decoder_event = recv_decoder_event(&mut active) => {
                     VoiceWorkerInput::Decoder(decoder_event)
                 }
+                _ = sleep_until(deadline), if idle => VoiceWorkerInput::IdleTimeout,
             }
         } else {
             tokio::select! {
                 command = commands.recv() => VoiceWorkerInput::Command(command),
                 event = session.next_event() => VoiceWorkerInput::Voice(event),
+                _ = sleep_until(deadline), if idle => VoiceWorkerInput::IdleTimeout,
             }
         };
 
@@ -769,6 +785,29 @@ async fn run_voice_worker(
                 players.write().await.finish_current(guild_id, track_id);
                 active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
             }
+            VoiceWorkerInput::IdleTimeout => {
+                idle_deadline = None;
+                let snapshot = {
+                    let players = players.read().await;
+                    players.snapshot(guild_id)
+                };
+                if snapshot.is_idle() {
+                    info!(
+                        guild_id = guild_id.get(),
+                        idle_seconds = IDLE_TIMEOUT.as_secs(),
+                        "voice worker idle timeout elapsed"
+                    );
+                    break VoiceWorkerStopReason::IdleTimedOut;
+                }
+
+                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+            }
+        }
+
+        if active.is_some() {
+            idle_deadline = None;
+        } else if idle_deadline.is_none() {
+            idle_deadline = Some(Instant::now() + IDLE_TIMEOUT);
         }
     };
 
