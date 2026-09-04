@@ -2,8 +2,18 @@ use std::collections::{HashMap, VecDeque};
 
 use gloamwire::model::GuildId;
 use rand::seq::SliceRandom;
+use thiserror::Error;
 
 use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
+
+/// Maximum number of waiting tracks retained for one guild.
+pub const MAX_GUILD_QUEUE_TRACKS: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("the guild queue is full (limit {limit})")]
+pub struct QueueCapacityError {
+    pub limit: usize,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LoopMode {
@@ -90,6 +100,16 @@ impl PlayerManager {
             .unwrap_or_default()
     }
 
+    #[must_use]
+    pub fn remaining_queue_capacity(&self, guild_id: GuildId) -> usize {
+        MAX_GUILD_QUEUE_TRACKS.saturating_sub(
+            self.players
+                .get(&guild_id)
+                .map(|player| player.queue.len())
+                .unwrap_or_default(),
+        )
+    }
+
     pub fn set_loop_mode(&mut self, guild_id: GuildId, mode: LoopMode) -> LoopMode {
         let player = self.players.entry(guild_id).or_default();
         let previous = player.loop_mode;
@@ -106,17 +126,23 @@ impl PlayerManager {
         request: TrackRequest,
         requested_by: RequestedBy,
         resolved: ResolvedTrack,
-    ) -> (Track, usize) {
+    ) -> Result<(Track, usize), QueueCapacityError> {
+        self.ensure_queue_capacity(guild_id)?;
         let track = Track::from_resolved(self.allocate_track_id(), request, requested_by, resolved);
-        let position = self.enqueue(guild_id, track.clone());
-        (track, position)
+        let position = self.enqueue(guild_id, track.clone())?;
+        Ok((track, position))
     }
 
     /// Appends a track to the guild FIFO and returns its one-based queue position.
-    pub fn enqueue(&mut self, guild_id: GuildId, track: Track) -> usize {
+    pub fn enqueue(
+        &mut self,
+        guild_id: GuildId,
+        track: Track,
+    ) -> Result<usize, QueueCapacityError> {
+        self.ensure_queue_capacity(guild_id)?;
         let player = self.players.entry(guild_id).or_default();
         player.queue.push_back(track);
-        player.queue.len()
+        Ok(player.queue.len())
     }
 
     /// Removes one queued track by zero-based index without touching the active track.
@@ -200,7 +226,8 @@ impl PlayerManager {
     ///
     /// Natural completion uses this path. Manual skip and decoder failures use
     /// `finish_current` so a broken or intentionally skipped track cannot become
-    /// an accidental infinite loop.
+    /// an accidental infinite loop. If the queue is already at its hard limit,
+    /// the completed track is not reinserted by a loop mode.
     pub fn complete_current(&mut self, guild_id: GuildId, track_id: TrackId) -> bool {
         let Some(player) = self.players.get_mut(&guild_id) else {
             return false;
@@ -217,10 +244,12 @@ impl PlayerManager {
             .now_playing
             .take()
             .expect("current track was checked above");
-        match player.loop_mode {
-            LoopMode::Off => {}
-            LoopMode::Track => player.queue.push_front(track),
-            LoopMode::Queue => player.queue.push_back(track),
+        if player.queue.len() < MAX_GUILD_QUEUE_TRACKS {
+            match player.loop_mode {
+                LoopMode::Off => {}
+                LoopMode::Track => player.queue.push_front(track),
+                LoopMode::Queue => player.queue.push_back(track),
+            }
         }
         true
     }
@@ -231,6 +260,16 @@ impl PlayerManager {
             .remove(&guild_id)
             .map(GuildPlayer::into_snapshot)
             .unwrap_or_default()
+    }
+
+    fn ensure_queue_capacity(&self, guild_id: GuildId) -> Result<(), QueueCapacityError> {
+        if self.remaining_queue_capacity(guild_id) == 0 {
+            Err(QueueCapacityError {
+                limit: MAX_GUILD_QUEUE_TRACKS,
+            })
+        } else {
+            Ok(())
+        }
     }
 
     fn allocate_track_id(&mut self) -> TrackId {
@@ -249,7 +288,7 @@ mod tests {
 
     use gloamwire::model::{GuildId, UserId};
 
-    use super::{LoopMode, PlayerManager};
+    use super::{LoopMode, MAX_GUILD_QUEUE_TRACKS, PlayerManager};
     use crate::media::{
         RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
     };
@@ -282,8 +321,14 @@ mod tests {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
 
-        assert_eq!(players.enqueue(guild_id, track(1, "first")), 1);
-        assert_eq!(players.enqueue(guild_id, track(2, "second")), 2);
+        assert_eq!(
+            players.enqueue(guild_id, track(1, "first")).expect("queue"),
+            1
+        );
+        assert_eq!(
+            players.enqueue(guild_id, track(2, "second")).expect("queue"),
+            2
+        );
 
         let before = players.snapshot(guild_id);
         assert_eq!(before.queue[0].id, TrackId::new(1));
@@ -306,18 +351,22 @@ mod tests {
         let mut players = PlayerManager::new();
         let requested_by = RequestedBy::new(UserId::new(7));
 
-        let (first, first_position) = players.enqueue_resolved(
-            GuildId::new(1),
-            TrackRequest::new("first").expect("request"),
-            requested_by,
-            resolved(1, "first"),
-        );
-        let (second, second_position) = players.enqueue_resolved(
-            GuildId::new(2),
-            TrackRequest::new("second").expect("request"),
-            requested_by,
-            resolved(2, "second"),
-        );
+        let (first, first_position) = players
+            .enqueue_resolved(
+                GuildId::new(1),
+                TrackRequest::new("first").expect("request"),
+                requested_by,
+                resolved(1, "first"),
+            )
+            .expect("queue");
+        let (second, second_position) = players
+            .enqueue_resolved(
+                GuildId::new(2),
+                TrackRequest::new("second").expect("request"),
+                requested_by,
+                resolved(2, "second"),
+            )
+            .expect("queue");
 
         assert_eq!(first.id, TrackId::new(1));
         assert_eq!(second.id, TrackId::new(2));
@@ -326,10 +375,27 @@ mod tests {
     }
 
     #[test]
+    fn queue_capacity_is_hard_bounded_per_guild() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+
+        for id in 1..=MAX_GUILD_QUEUE_TRACKS {
+            players
+                .enqueue(guild_id, track(id as u64, &format!("track {id}")))
+                .expect("within queue capacity");
+        }
+
+        assert_eq!(players.snapshot(guild_id).queued_len(), MAX_GUILD_QUEUE_TRACKS);
+        assert_eq!(players.remaining_queue_capacity(guild_id), 0);
+        assert!(players.enqueue(guild_id, track(999, "overflow")).is_err());
+        assert_eq!(players.snapshot(guild_id).queued_len(), MAX_GUILD_QUEUE_TRACKS);
+    }
+
+    #[test]
     fn current_track_can_only_be_finished_by_matching_worker() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
         players.start_next(guild_id).expect("next track");
 
         assert!(!players.finish_current(guild_id, TrackId::new(99)));
@@ -343,8 +409,8 @@ mod tests {
     fn natural_completion_respects_loop_modes() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
-        players.enqueue(guild_id, track(2, "second"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
+        players.enqueue(guild_id, track(2, "second")).expect("queue");
         players.start_next(guild_id).expect("current track");
 
         assert_eq!(players.loop_mode(guild_id), LoopMode::Off);
@@ -372,7 +438,7 @@ mod tests {
     fn manual_finish_bypasses_loop_policy() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
         players.start_next(guild_id).expect("current track");
         players.set_loop_mode(guild_id, LoopMode::Track);
 
@@ -384,9 +450,9 @@ mod tests {
     fn remove_queued_does_not_touch_current_track() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "current"));
-        players.enqueue(guild_id, track(2, "remove"));
-        players.enqueue(guild_id, track(3, "keep"));
+        players.enqueue(guild_id, track(1, "current")).expect("queue");
+        players.enqueue(guild_id, track(2, "remove")).expect("queue");
+        players.enqueue(guild_id, track(3, "keep")).expect("queue");
         players.start_next(guild_id).expect("current track");
 
         let removed = players.remove_queued(guild_id, 0).expect("queued track");
@@ -405,9 +471,9 @@ mod tests {
     fn move_queued_reorders_without_losing_tracks() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
-        players.enqueue(guild_id, track(2, "second"));
-        players.enqueue(guild_id, track(3, "third"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
+        players.enqueue(guild_id, track(2, "second")).expect("queue");
+        players.enqueue(guild_id, track(3, "third")).expect("queue");
 
         let moved = players.move_queued(guild_id, 0, 2).expect("moved track");
         assert_eq!(moved.id, TrackId::new(1));
@@ -426,8 +492,8 @@ mod tests {
     fn invalid_queue_move_is_non_destructive() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
-        players.enqueue(guild_id, track(2, "second"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
+        players.enqueue(guild_id, track(2, "second")).expect("queue");
         let before = players.snapshot(guild_id);
 
         assert!(players.move_queued(guild_id, 0, 9).is_none());
@@ -438,9 +504,11 @@ mod tests {
     fn shuffle_queued_preserves_current_track_and_membership() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "current"));
+        players.enqueue(guild_id, track(1, "current")).expect("queue");
         for id in 2..=7 {
-            players.enqueue(guild_id, track(id, &format!("track {id}")));
+            players
+                .enqueue(guild_id, track(id, &format!("track {id}")))
+                .expect("queue");
         }
         players.start_next(guild_id).expect("current track");
 
@@ -466,7 +534,7 @@ mod tests {
         let mut players = PlayerManager::new();
         assert_eq!(players.shuffle_queued(guild_id), 0);
 
-        players.enqueue(guild_id, track(1, "only"));
+        players.enqueue(guild_id, track(1, "only")).expect("queue");
         let before = players.snapshot(guild_id);
         assert_eq!(players.shuffle_queued(guild_id), 1);
         assert_eq!(players.snapshot(guild_id), before);
@@ -476,7 +544,7 @@ mod tests {
     fn clear_returns_removed_state() {
         let guild_id = GuildId::new(42);
         let mut players = PlayerManager::new();
-        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(1, "first")).expect("queue");
 
         let removed = players.clear(guild_id);
         assert_eq!(removed.queued_len(), 1);
