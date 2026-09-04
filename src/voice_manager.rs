@@ -675,7 +675,8 @@ async fn run_voice_worker(
                             history.snapshot(guild_id).last().cloned()
                         };
                         let Some(previous) = previous else {
-                            PlaybackControlResult::NothingPlaying
+                            let _ = response.send(PlaybackControlResult::NothingPlaying);
+                            continue;
                         };
 
                         let current = {
