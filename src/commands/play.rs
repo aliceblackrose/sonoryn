@@ -214,7 +214,10 @@ fn autocomplete_choice(track: ResolvedTrack) -> Option<AutocompleteChoice> {
         _ => track.metadata.title.clone(),
     };
     let label = truncate_chars(&label, AUTOCOMPLETE_CHOICE_NAME_LIMIT);
-    Some(AutocompleteChoice::string(label, track.metadata.webpage_url))
+    Some(AutocompleteChoice::string(
+        label,
+        track.metadata.webpage_url,
+    ))
 }
 
 async fn current_voice_channel(
@@ -311,7 +314,10 @@ fn truncate_chars(value: &str, limit: usize) -> String {
         return String::new();
     }
 
-    let mut truncated = value.chars().take(limit.saturating_sub(1)).collect::<String>();
+    let mut truncated = value
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
     truncated.push('…');
     truncated
 }
