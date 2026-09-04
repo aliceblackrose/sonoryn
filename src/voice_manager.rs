@@ -693,11 +693,11 @@ async fn run_voice_worker(
 
                         {
                             let mut players = players.write().await;
-                            if let Some(current) = current {
-                                if players.finish_current(guild_id, current.id) {
-                                    let position = players.enqueue(guild_id, current);
-                                    let _ = players.move_queued(guild_id, position - 1, 0);
-                                }
+                            if let Some(current) = current
+                                && players.finish_current(guild_id, current.id)
+                            {
+                                let position = players.enqueue(guild_id, current);
+                                let _ = players.move_queued(guild_id, position - 1, 0);
                             }
                             let position = players.enqueue(guild_id, previous);
                             let _ = players.move_queued(guild_id, position - 1, 0);
