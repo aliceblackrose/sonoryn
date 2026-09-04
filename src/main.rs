@@ -4,7 +4,7 @@ mod history;
 mod state;
 mod voice_manager;
 
-use std::{env, io, process::Output};
+use std::{env, io, process::Output, time::Instant};
 
 use gloam_commands::{DispatchOutcome, Framework, Registration};
 use gloamwire::{
@@ -20,6 +20,7 @@ use crate::{commands::command_list, state::AppState, voice_manager::VoiceManager
 
 type MainResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const GATEWAY_CONTROL_CAPACITY: usize = 64;
+const COMMAND_CONCURRENCY: usize = 64;
 const TOOL_VERSION_LIMIT: usize = 160;
 
 #[tokio::main]
@@ -47,7 +48,7 @@ async fn main() -> MainResult<()> {
     let framework = Framework::builder(state.clone())
         .commands(command_list())
         .registration(registration)
-        .max_concurrent_commands(64)
+        .max_concurrent_commands(COMMAND_CONCURRENCY)
         .build()?;
 
     let mut command_tasks = JoinSet::new();
@@ -80,6 +81,10 @@ async fn main() -> MainResult<()> {
             event = gateway.next_event() => {
                 let event = event?;
 
+                if matches!(event, GatewayEvent::Reconnect | GatewayEvent::InvalidSession { .. }) {
+                    state.metrics.increment_reconnects();
+                }
+
                 if let GatewayEvent::Dispatch(dispatch) = &event {
                     let typed = {
                         let mut cache = state.cache.write().await;
@@ -103,13 +108,18 @@ async fn main() -> MainResult<()> {
                 match framework.dispatch(&rest, &event)? {
                     DispatchOutcome::Spawned(task) => {
                         let command_name = task.command_name();
+                        let metrics = state.metrics.clone();
                         command_tasks.spawn(async move {
+                            let started = Instant::now();
                             if let Err(error) = task.join().await {
+                                metrics.increment_failures();
                                 error!(command = command_name, error = %error, "command task failed");
                             }
+                            metrics.record_command_latency(started.elapsed());
                         });
                     }
                     DispatchOutcome::AtCapacity { name } => {
+                        state.metrics.increment_failures();
                         warn!(command = name, "command rejected at capacity");
                     }
                     DispatchOutcome::Unregistered { name } => {
