@@ -11,6 +11,30 @@ pub(crate) enum GatewayControl {
         guild_id: GuildId,
         response: oneshot::Sender<VoiceLeaveResult>,
     },
+    Playback {
+        guild_id: GuildId,
+        action: PlaybackAction,
+        response: oneshot::Sender<PlaybackControlResult>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackAction {
+    Wake,
+    Skip,
+    Pause,
+    Resume,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlaybackControlResult {
+    Accepted,
+    NotConnected,
+    NothingPlaying,
+    AlreadyPaused,
+    AlreadyPlaying,
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
