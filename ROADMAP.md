@@ -92,7 +92,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Per-guild FIFO queue.
 - [x] Automatic transition to the next track.
 - [x] Clear, structured command responses for queued/playing/error states.
-- [ ] Idle timeout and automatic disconnect.
+- [x] Idle timeout and automatic disconnect.
 - [x] Require control commands to come from an appropriate voice context.
 
 ## Phase 4 — Queue and playback controls
