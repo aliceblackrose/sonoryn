@@ -4,9 +4,8 @@ use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
     model::{ChannelId, GuildId, UserId},
     voice::{
-        DaveVoiceSession, DaveyProvider, OPUS_SILENCE_FLUSH_FRAMES, VoiceConnectionInfo,
-        VoiceFramePacer, VoiceGatewayEvent, VoiceOpusFrame, VoiceRendezvous, VoiceRendezvousStatus,
-        VoiceResult, VoiceSpeakingFlags,
+        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceFramePacer, VoiceGatewayEvent,
+        VoiceRendezvous, VoiceRendezvousStatus, VoiceResult, VoiceSpeakingFlags,
     },
 };
 use sonoryn::{
@@ -615,11 +614,11 @@ async fn run_voice_worker(
                 if let Some(playback) = active.take() {
                     let speaking = playback.speaking;
                     playback.cancel();
-                    if speaking && let Err(error) = flush_silence(&mut session).await {
+                    if speaking && let Err(error) = session.finish_speaking().await {
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
-                            "failed to flush silence during voice shutdown"
+                            "failed to finish speaking during voice shutdown"
                         );
                     }
                 }
@@ -646,7 +645,7 @@ async fn run_voice_worker(
                         let track_id = playback.track_id;
                         let speaking = playback.speaking;
                         playback.cancel();
-                        if speaking && let Err(error) = flush_silence(&mut session).await {
+                        if speaking && let Err(error) = session.finish_speaking().await {
                             break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                         }
                         players.write().await.finish_current(guild_id, track_id);
@@ -657,6 +656,12 @@ async fn run_voice_worker(
                         Some(playback) if playback.paused => PlaybackControlResult::AlreadyPaused,
                         Some(playback) => {
                             playback.paused = true;
+                            if playback.speaking {
+                                if let Err(error) = session.finish_speaking().await {
+                                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                                }
+                                playback.speaking = false;
+                            }
                             PlaybackControlResult::Accepted
                         }
                         None => PlaybackControlResult::NothingPlaying,
@@ -675,7 +680,7 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = flush_silence(&mut session).await {
+                            if speaking && let Err(error) = session.finish_speaking().await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -719,7 +724,7 @@ async fn run_voice_worker(
                 };
                 let track_id = playback.track_id;
                 let speaking = playback.speaking;
-                if speaking && let Err(error) = flush_silence(&mut session).await {
+                if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
@@ -736,7 +741,7 @@ async fn run_voice_worker(
                     failure = ?failure,
                     "track playback failed; advancing queue"
                 );
-                if speaking && let Err(error) = flush_silence(&mut session).await {
+                if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
@@ -752,7 +757,7 @@ async fn run_voice_worker(
                     guild_id = guild_id.get(),
                     "decoder task ended without a terminal event; advancing queue"
                 );
-                if speaking && let Err(error) = flush_silence(&mut session).await {
+                if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
@@ -841,15 +846,6 @@ async fn run_decoder(
             }
         }
     }
-}
-
-async fn flush_silence(session: &mut DaveVoiceSession<DaveyProvider>) -> VoiceResult<()> {
-    let mut pacer = VoiceFramePacer::default();
-    for _ in 0..OPUS_SILENCE_FLUSH_FRAMES {
-        pacer.wait_for_next_frame().await;
-        session.send_opus_frame(VoiceOpusFrame::silence()).await?;
-    }
-    Ok(())
 }
 
 async fn send_stopped(
