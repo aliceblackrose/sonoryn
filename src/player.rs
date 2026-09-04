@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use gloamwire::model::GuildId;
 
-use crate::media::{Track, TrackId};
+use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
 
 /// Read-only copy of one guild's playback state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,6 +53,7 @@ impl GuildPlayer {
 #[derive(Debug, Default)]
 pub struct PlayerManager {
     players: HashMap<GuildId, GuildPlayer>,
+    next_track_id: u64,
 }
 
 impl PlayerManager {
@@ -69,6 +70,21 @@ impl PlayerManager {
             .get(&guild_id)
             .map(GuildPlayer::snapshot)
             .unwrap_or_default()
+    }
+
+    /// Converts resolver output into a durable track and appends it to the guild
+    /// FIFO. Track IDs are process-local but unique for the lifetime of this
+    /// manager, including across guilds.
+    pub fn enqueue_resolved(
+        &mut self,
+        guild_id: GuildId,
+        request: TrackRequest,
+        requested_by: RequestedBy,
+        resolved: ResolvedTrack,
+    ) -> (Track, usize) {
+        let track = Track::from_resolved(self.allocate_track_id(), request, requested_by, resolved);
+        let position = self.enqueue(guild_id, track.clone());
+        (track, position)
     }
 
     /// Appends a track to the guild FIFO and returns its one-based queue position.
@@ -118,6 +134,15 @@ impl PlayerManager {
             .map(GuildPlayer::into_snapshot)
             .unwrap_or_default()
     }
+
+    fn allocate_track_id(&mut self) -> TrackId {
+        loop {
+            self.next_track_id = self.next_track_id.wrapping_add(1);
+            if self.next_track_id != 0 {
+                return TrackId::new(self.next_track_id);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -131,22 +156,26 @@ mod tests {
         RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
     };
 
+    fn resolved(id: u64, title: &str) -> ResolvedTrack {
+        ResolvedTrack {
+            source: TrackSource::YouTube,
+            metadata: TrackMetadata {
+                title: title.to_owned(),
+                artist: Some("Artist".to_owned()),
+                duration: Some(Duration::from_secs(60 + id)),
+                artwork_url: None,
+                webpage_url: format!("https://example.test/{id}"),
+            },
+            locator: format!("https://example.test/{id}"),
+        }
+    }
+
     fn track(id: u64, title: &str) -> Track {
         Track::from_resolved(
             TrackId::new(id),
             TrackRequest::new(title).expect("request"),
             RequestedBy::new(UserId::new(7)),
-            ResolvedTrack {
-                source: TrackSource::YouTube,
-                metadata: TrackMetadata {
-                    title: title.to_owned(),
-                    artist: Some("Artist".to_owned()),
-                    duration: Some(Duration::from_secs(60 + id)),
-                    artwork_url: None,
-                    webpage_url: format!("https://example.test/{id}"),
-                },
-                locator: format!("https://example.test/{id}"),
-            },
+            resolved(id, title),
         )
     }
 
@@ -172,6 +201,30 @@ mod tests {
         );
         assert_eq!(after.queue.len(), 1);
         assert_eq!(before.queue.len(), 2);
+    }
+
+    #[test]
+    fn resolved_tracks_receive_unique_process_local_ids() {
+        let mut players = PlayerManager::new();
+        let requested_by = RequestedBy::new(UserId::new(7));
+
+        let (first, first_position) = players.enqueue_resolved(
+            GuildId::new(1),
+            TrackRequest::new("first").expect("request"),
+            requested_by,
+            resolved(1, "first"),
+        );
+        let (second, second_position) = players.enqueue_resolved(
+            GuildId::new(2),
+            TrackRequest::new("second").expect("request"),
+            requested_by,
+            resolved(2, "second"),
+        );
+
+        assert_eq!(first.id, TrackId::new(1));
+        assert_eq!(second.id, TrackId::new(2));
+        assert_eq!(first_position, 1);
+        assert_eq!(second_position, 1);
     }
 
     #[test]

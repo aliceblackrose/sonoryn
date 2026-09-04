@@ -1,15 +1,206 @@
 use std::fmt::Write;
 
 use gloam_commands::prelude::*;
-use sonoryn::{media::Track, player::PlayerSnapshot};
+use gloamwire::model::{ChannelId, GuildId, UserId};
+use sonoryn::{
+    media::{RequestedBy, Track, TrackRequest},
+    player::PlayerSnapshot,
+};
+use tokio::sync::oneshot;
 
-use crate::state::AppState;
+use crate::{
+    gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
+    state::AppState,
+};
 
 const QUEUE_PREVIEW_LIMIT: usize = 10;
 const TRACK_TITLE_LIMIT: usize = 96;
+const ERROR_MESSAGE_LIMIT: usize = 240;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![queue, nowplaying]
+    commands![play, skip, pause, resume, stop, queue, nowplaying]
+}
+
+#[command(description = "Play a song or add it to the queue", guild_only)]
+pub(crate) async fn play(
+    ctx: Context<AppState>,
+    #[description = "Song URL or search query"]
+    #[min_length = 1]
+    #[max_length = 200]
+    query: String,
+) -> Result<()> {
+    let interaction = ctx.interaction();
+    let Some(guild_id) = interaction.guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(());
+    };
+    let Some(user_id) = invoking_user_id(interaction) else {
+        ctx.reply_ephemeral("I could not determine the invoking user.")
+            .await?;
+        return Ok(());
+    };
+    if current_voice_channel(ctx.data(), guild_id, user_id)
+        .await
+        .is_none()
+    {
+        ctx.reply_ephemeral("Join a voice channel first, then run `/play`.")
+            .await?;
+        return Ok(());
+    }
+
+    let request = match TrackRequest::new(query) {
+        Ok(request) => request,
+        Err(message) => {
+            ctx.reply_ephemeral(message).await?;
+            return Ok(());
+        }
+    };
+
+    ctx.defer_ephemeral().await?;
+    let resolved = match ctx.data().resolver.resolve(&request).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            let message = escape_markdown(&truncate_chars(&error.to_string(), ERROR_MESSAGE_LIMIT));
+            ctx.reply_ephemeral(format!("I could not resolve that track: {message}"))
+                .await?;
+            return Ok(());
+        }
+    };
+
+    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
+        ctx.reply_ephemeral("You left voice while I was resolving that track.")
+            .await?;
+        return Ok(());
+    };
+
+    match ensure_voice(ctx.data(), guild_id, channel_id).await {
+        VoiceJoinResult::Joined { .. } => {}
+        VoiceJoinResult::AlreadyConnected {
+            channel_id: connected,
+        } if connected == channel_id => {}
+        VoiceJoinResult::AlreadyConnected {
+            channel_id: connected,
+        } => {
+            ctx.reply_ephemeral(format!(
+                "I am already connected to <#{}>. Join that channel to control playback.",
+                connected.get()
+            ))
+            .await?;
+            return Ok(());
+        }
+        VoiceJoinResult::InProgress { channel_id } => {
+            ctx.reply_ephemeral(format!(
+                "A voice join for <#{}> is already in progress. Try `/play` again once it connects.",
+                channel_id.get()
+            ))
+            .await?;
+            return Ok(());
+        }
+        VoiceJoinResult::Cancelled => {
+            ctx.reply_ephemeral("The voice join was cancelled.").await?;
+            return Ok(());
+        }
+        VoiceJoinResult::Failed(error) => {
+            ctx.reply_ephemeral(error).await?;
+            return Ok(());
+        }
+    }
+
+    let (track, queue_position) = {
+        let mut players = ctx.data().player_manager.write().await;
+        players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
+    };
+
+    match playback_control(ctx.data(), guild_id, channel_id, PlaybackAction::Wake).await {
+        PlaybackControlResult::Accepted => {
+            let snapshot = {
+                let players = ctx.data().player_manager.read().await;
+                players.snapshot(guild_id)
+            };
+            if snapshot
+                .now_playing
+                .as_ref()
+                .is_some_and(|current| current.id == track.id)
+            {
+                ctx.reply_ephemeral(format!("Playing {}", format_track(&track)))
+                    .await?;
+            } else {
+                ctx.reply_ephemeral(format!(
+                    "Queued {} at position {queue_position}.",
+                    format_track(&track)
+                ))
+                .await?;
+            }
+        }
+        PlaybackControlResult::NotConnected => {
+            ctx.reply_ephemeral("The voice worker disconnected before playback could start.")
+                .await?;
+        }
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => {
+            ctx.reply_ephemeral(format!(
+                "I am connected to <#{}>. Join that channel to control playback.",
+                channel_id.get()
+            ))
+            .await?;
+        }
+        PlaybackControlResult::NothingPlaying => {
+            ctx.reply_ephemeral("The track was queued, but the player did not start it.")
+                .await?;
+        }
+        PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
+            ctx.reply_ephemeral(format!("Queued {}.", format_track(&track)))
+                .await?;
+        }
+        PlaybackControlResult::Failed(error) => {
+            ctx.reply_ephemeral(error).await?;
+        }
+    }
+    Ok(())
+}
+
+#[command(description = "Skip the current track", guild_only)]
+pub(crate) async fn skip(ctx: Context<AppState>) -> Result<()> {
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Skip,
+        "Skipped the current track.",
+        "Nothing is playing right now.",
+    )
+    .await
+}
+
+#[command(description = "Pause the current track", guild_only)]
+pub(crate) async fn pause(ctx: Context<AppState>) -> Result<()> {
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Pause,
+        "Paused playback.",
+        "Nothing is playing right now.",
+    )
+    .await
+}
+
+#[command(description = "Resume a paused track", guild_only)]
+pub(crate) async fn resume(ctx: Context<AppState>) -> Result<()> {
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Resume,
+        "Resumed playback.",
+        "Nothing is playing right now.",
+    )
+    .await
+}
+
+#[command(description = "Stop playback and clear the queue", guild_only)]
+pub(crate) async fn stop(ctx: Context<AppState>) -> Result<()> {
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Stop,
+        "Stopped playback and cleared the queue.",
+        "Nothing is playing and the queue is already empty.",
+    )
+    .await
 }
 
 #[command(description = "Show the current music queue", guild_only)]
@@ -51,6 +242,119 @@ pub(crate) async fn nowplaying(ctx: Context<AppState>) -> Result<()> {
     );
     ctx.reply_ephemeral(message).await?;
     Ok(())
+}
+
+async fn run_simple_control(
+    ctx: &Context<AppState>,
+    action: PlaybackAction,
+    accepted: &str,
+    idle: &str,
+) -> Result<()> {
+    let interaction = ctx.interaction();
+    let Some(guild_id) = interaction.guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(());
+    };
+    let Some(user_id) = invoking_user_id(interaction) else {
+        ctx.reply_ephemeral("I could not determine the invoking user.")
+            .await?;
+        return Ok(());
+    };
+    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
+        ctx.reply_ephemeral("Join my voice channel first to control playback.")
+            .await?;
+        return Ok(());
+    };
+
+    let message = match playback_control(ctx.data(), guild_id, channel_id, action).await {
+        PlaybackControlResult::Accepted => accepted.to_owned(),
+        PlaybackControlResult::NothingPlaying => idle.to_owned(),
+        PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => format!(
+            "I am connected to <#{}>. Join that channel to control playback.",
+            channel_id.get()
+        ),
+        PlaybackControlResult::AlreadyPaused => "Playback is already paused.".to_owned(),
+        PlaybackControlResult::AlreadyPlaying => "Playback is already running.".to_owned(),
+        PlaybackControlResult::Failed(error) => error,
+    };
+    ctx.reply_ephemeral(message).await?;
+    Ok(())
+}
+
+async fn current_voice_channel(
+    data: &AppState,
+    guild_id: GuildId,
+    user_id: UserId,
+) -> Option<ChannelId> {
+    let cache = data.cache.read().await;
+    cache
+        .voice_state(guild_id, user_id)
+        .and_then(|state| state.channel_id)
+}
+
+async fn ensure_voice(
+    data: &AppState,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+) -> VoiceJoinResult {
+    let (response, result) = oneshot::channel();
+    if data
+        .gateway_control
+        .send(GatewayControl::JoinVoice {
+            guild_id,
+            channel_id,
+            response,
+        })
+        .await
+        .is_err()
+    {
+        return VoiceJoinResult::Failed("The Gateway control loop is unavailable.".to_owned());
+    }
+
+    result.await.unwrap_or_else(|_| {
+        VoiceJoinResult::Failed("The voice join ended before returning a result.".to_owned())
+    })
+}
+
+async fn playback_control(
+    data: &AppState,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    action: PlaybackAction,
+) -> PlaybackControlResult {
+    let (response, result) = oneshot::channel();
+    if data
+        .gateway_control
+        .send(GatewayControl::Playback {
+            guild_id,
+            channel_id,
+            action,
+            response,
+        })
+        .await
+        .is_err()
+    {
+        return PlaybackControlResult::Failed(
+            "The Gateway control loop is unavailable.".to_owned(),
+        );
+    }
+
+    result.await.unwrap_or_else(|_| {
+        PlaybackControlResult::Failed(
+            "The voice worker ended before returning a playback result.".to_owned(),
+        )
+    })
+}
+
+fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserId> {
+    interaction
+        .member
+        .as_ref()
+        .and_then(|member| member.user.as_ref())
+        .map(|user| user.id)
+        .or_else(|| interaction.user.as_ref().map(|user| user.id))
 }
 
 fn render_queue(snapshot: &PlayerSnapshot) -> String {

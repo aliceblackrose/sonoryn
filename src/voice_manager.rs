@@ -1,25 +1,32 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
     model::{ChannelId, GuildId, UserId},
     voice::{
-        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceRendezvous,
-        VoiceRendezvousStatus,
+        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceFramePacer, VoiceGatewayEvent,
+        VoiceRendezvous, VoiceRendezvousStatus, VoiceResult, VoiceSpeakingFlags,
     },
 };
+use sonoryn::{
+    media::{EncodedOpusFrame, FfmpegOpusDecoder, TrackResolver},
+    player::PlayerManager,
+};
 use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinSet,
+    sync::{RwLock, mpsc, oneshot},
+    task::{JoinHandle, JoinSet},
     time::sleep,
 };
 use tracing::{error, info, warn};
 
-use crate::gateway_control::{GatewayControl, VoiceJoinResult, VoiceLeaveResult};
+use crate::gateway_control::{
+    GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult, VoiceLeaveResult,
+};
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
+const DECODER_FRAME_CAPACITY: usize = 2;
 
 struct PendingJoin {
     request_id: u64,
@@ -34,9 +41,19 @@ struct VoiceWorkerHandle {
     commands: mpsc::Sender<VoiceWorkerCommand>,
 }
 
-#[derive(Debug)]
+struct VoiceWorkerServices {
+    worker_events: mpsc::Sender<VoiceWorkerEvent>,
+    players: Arc<RwLock<PlayerManager>>,
+    resolver: Arc<dyn TrackResolver>,
+    decoder: FfmpegOpusDecoder,
+}
+
 enum VoiceWorkerCommand {
     Shutdown,
+    Playback {
+        action: PlaybackAction,
+        response: oneshot::Sender<PlaybackControlResult>,
+    },
 }
 
 #[derive(Debug)]
@@ -64,11 +81,17 @@ pub(crate) struct VoiceManager {
     workers: HashMap<GuildId, VoiceWorkerHandle>,
     worker_events: mpsc::Sender<VoiceWorkerEvent>,
     tasks: JoinSet<()>,
+    players: Arc<RwLock<PlayerManager>>,
+    resolver: Arc<dyn TrackResolver>,
+    decoder: FfmpegOpusDecoder,
     next_id: u64,
 }
 
 impl VoiceManager {
-    pub(crate) fn new() -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
+    pub(crate) fn new(
+        players: Arc<RwLock<PlayerManager>>,
+        resolver: Arc<dyn TrackResolver>,
+    ) -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
         let (worker_events, receiver) = mpsc::channel(VOICE_EVENT_CAPACITY);
         (
             Self {
@@ -76,6 +99,9 @@ impl VoiceManager {
                 workers: HashMap::new(),
                 worker_events,
                 tasks: JoinSet::new(),
+                players,
+                resolver,
+                decoder: FfmpegOpusDecoder::new(),
                 next_id: 0,
             },
             receiver,
@@ -99,6 +125,15 @@ impl VoiceManager {
             }
             GatewayControl::LeaveVoice { guild_id, response } => {
                 self.leave_voice(guild_id, response, gateway).await;
+            }
+            GatewayControl::Playback {
+                guild_id,
+                channel_id,
+                action,
+                response,
+            } => {
+                self.route_playback(guild_id, channel_id, action, response)
+                    .await;
             }
         }
         self.reap_tasks();
@@ -228,6 +263,11 @@ impl VoiceManager {
                     "Sonoryn is shutting down.".to_owned(),
                 ));
             }
+            GatewayControl::Playback { response, .. } => {
+                let _ = response.send(PlaybackControlResult::Failed(
+                    "Sonoryn is shutting down.".to_owned(),
+                ));
+            }
         }
     }
 
@@ -325,6 +365,7 @@ impl VoiceManager {
         if let Some(pending) = self.pending.remove(&guild_id) {
             let channel_id = pending.channel_id;
             let _ = pending.response.send(VoiceJoinResult::Cancelled);
+            self.players.write().await.clear(guild_id);
             match gateway
                 .update_voice_state(&UpdateVoiceState::new(guild_id, None))
                 .await
@@ -342,6 +383,7 @@ impl VoiceManager {
         }
 
         let Some(worker) = self.workers.remove(&guild_id) else {
+            self.players.write().await.clear(guild_id);
             let _ = response.send(VoiceLeaveResult::NotConnected);
             return;
         };
@@ -364,6 +406,36 @@ impl VoiceManager {
         }
     }
 
+    async fn route_playback(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        action: PlaybackAction,
+        response: oneshot::Sender<PlaybackControlResult>,
+    ) {
+        let Some(worker) = self.workers.get(&guild_id) else {
+            let _ = response.send(PlaybackControlResult::NotConnected);
+            return;
+        };
+        if worker.channel_id != channel_id {
+            let _ = response.send(PlaybackControlResult::WrongVoiceChannel {
+                channel_id: worker.channel_id,
+            });
+            return;
+        }
+        let commands = worker.commands.clone();
+
+        if let Err(error) = commands
+            .send(VoiceWorkerCommand::Playback { action, response })
+            .await
+            && let VoiceWorkerCommand::Playback { response, .. } = error.0
+        {
+            let _ = response.send(PlaybackControlResult::Failed(
+                "The guild voice worker is unavailable.".to_owned(),
+            ));
+        }
+    }
+
     fn start_worker(&mut self, guild_id: GuildId, pending: PendingJoin, info: VoiceConnectionInfo) {
         let generation = self.next_id();
         let (commands, receiver) = mpsc::channel(VOICE_COMMAND_CAPACITY);
@@ -376,7 +448,12 @@ impl VoiceManager {
             },
         );
 
-        let worker_events = self.worker_events.clone();
+        let services = VoiceWorkerServices {
+            worker_events: self.worker_events.clone(),
+            players: self.players.clone(),
+            resolver: self.resolver.clone(),
+            decoder: self.decoder.clone(),
+        };
         self.tasks.spawn(run_voice_worker(
             guild_id,
             generation,
@@ -384,7 +461,7 @@ impl VoiceManager {
             info,
             receiver,
             pending.response,
-            worker_events,
+            services,
         ));
     }
 
@@ -407,6 +484,58 @@ enum RendezvousOutcome {
     ServerUnavailable,
 }
 
+enum VoiceWorkerInput {
+    Command(Option<VoiceWorkerCommand>),
+    Voice(VoiceResult<VoiceGatewayEvent>),
+    Decoder(Option<DecoderEvent>),
+}
+
+struct ActivePlayback {
+    track_id: sonoryn::media::TrackId,
+    events: mpsc::Receiver<DecoderEvent>,
+    task: JoinHandle<()>,
+    pacer: VoiceFramePacer,
+    paused: bool,
+    speaking: bool,
+}
+
+impl ActivePlayback {
+    fn spawn(
+        track: sonoryn::media::Track,
+        resolver: Arc<dyn TrackResolver>,
+        decoder: FfmpegOpusDecoder,
+    ) -> Self {
+        let track_id = track.id;
+        let (events, receiver) = mpsc::channel(DECODER_FRAME_CAPACITY);
+        let task = tokio::spawn(run_decoder(track, resolver, decoder, events));
+        Self {
+            track_id,
+            events: receiver,
+            task,
+            pacer: VoiceFramePacer::default(),
+            paused: false,
+            speaking: false,
+        }
+    }
+
+    fn cancel(self) {
+        self.task.abort();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PlaybackFailure {
+    MediaResolution,
+    DecoderStart,
+    DecoderRead,
+}
+
+enum DecoderEvent {
+    Frame(EncodedOpusFrame),
+    Finished,
+    Failed(PlaybackFailure),
+}
+
 async fn run_voice_worker(
     guild_id: GuildId,
     generation: u64,
@@ -414,8 +543,14 @@ async fn run_voice_worker(
     info: VoiceConnectionInfo,
     mut commands: mpsc::Receiver<VoiceWorkerCommand>,
     response: oneshot::Sender<VoiceJoinResult>,
-    worker_events: mpsc::Sender<VoiceWorkerEvent>,
+    services: VoiceWorkerServices,
 ) {
+    let VoiceWorkerServices {
+        worker_events,
+        players,
+        resolver,
+        decoder,
+    } = services;
     let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
     tokio::pin!(connect);
 
@@ -440,6 +575,7 @@ async fn run_voice_worker(
             }
         }
         _ = commands.recv() => {
+            players.write().await.clear(guild_id);
             let _ = response.send(VoiceJoinResult::Cancelled);
             send_stopped(
                 &worker_events,
@@ -459,22 +595,187 @@ async fn run_voice_worker(
         "DAVE voice session connected"
     );
 
+    let mut active: Option<ActivePlayback> = None;
     let reason = loop {
-        tokio::select! {
-            command = commands.recv() => {
-                match command {
-                    Some(VoiceWorkerCommand::Shutdown) | None => {
-                        break VoiceWorkerStopReason::Requested;
-                    }
+        let decoder_enabled = active.as_ref().is_some_and(|playback| !playback.paused);
+        let input = if decoder_enabled {
+            tokio::select! {
+                command = commands.recv() => VoiceWorkerInput::Command(command),
+                event = session.next_event() => VoiceWorkerInput::Voice(event),
+                decoder_event = recv_decoder_event(&mut active) => {
+                    VoiceWorkerInput::Decoder(decoder_event)
                 }
             }
-            event = session.next_event() => {
-                if let Err(error) = event {
+        } else {
+            tokio::select! {
+                command = commands.recv() => VoiceWorkerInput::Command(command),
+                event = session.next_event() => VoiceWorkerInput::Voice(event),
+            }
+        };
+
+        match input {
+            VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Shutdown))
+            | VoiceWorkerInput::Command(None) => {
+                players.write().await.clear(guild_id);
+                if let Some(playback) = active.take() {
+                    let speaking = playback.speaking;
+                    playback.cancel();
+                    if speaking && let Err(error) = session.finish_speaking().await {
+                        warn!(
+                            guild_id = guild_id.get(),
+                            error = %error,
+                            "failed to finish speaking during voice shutdown"
+                        );
+                    }
+                }
+                break VoiceWorkerStopReason::Requested;
+            }
+            VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Playback { action, response })) => {
+                let result = match action {
+                    PlaybackAction::Wake => {
+                        if active.is_none() {
+                            active =
+                                start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                        }
+                        if active.is_some() {
+                            PlaybackControlResult::Accepted
+                        } else {
+                            PlaybackControlResult::NothingPlaying
+                        }
+                    }
+                    PlaybackAction::Skip => {
+                        let Some(playback) = active.take() else {
+                            let _ = response.send(PlaybackControlResult::NothingPlaying);
+                            continue;
+                        };
+                        let track_id = playback.track_id;
+                        let speaking = playback.speaking;
+                        playback.cancel();
+                        if speaking && let Err(error) = session.finish_speaking().await {
+                            break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                        }
+                        players.write().await.finish_current(guild_id, track_id);
+                        active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+                        PlaybackControlResult::Accepted
+                    }
+                    PlaybackAction::Pause => match active.as_mut() {
+                        Some(playback) if playback.paused => PlaybackControlResult::AlreadyPaused,
+                        Some(playback) => {
+                            playback.paused = true;
+                            if playback.speaking {
+                                if let Err(error) = session.finish_speaking().await {
+                                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                                }
+                                playback.speaking = false;
+                            }
+                            PlaybackControlResult::Accepted
+                        }
+                        None => PlaybackControlResult::NothingPlaying,
+                    },
+                    PlaybackAction::Resume => match active.as_mut() {
+                        Some(playback) if !playback.paused => PlaybackControlResult::AlreadyPlaying,
+                        Some(playback) => {
+                            playback.paused = false;
+                            playback.pacer = VoiceFramePacer::default();
+                            PlaybackControlResult::Accepted
+                        }
+                        None => PlaybackControlResult::NothingPlaying,
+                    },
+                    PlaybackAction::Stop => {
+                        let removed = players.write().await.clear(guild_id);
+                        if let Some(playback) = active.take() {
+                            let speaking = playback.speaking;
+                            playback.cancel();
+                            if speaking && let Err(error) = session.finish_speaking().await {
+                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                            }
+                        }
+                        if removed.is_idle() {
+                            PlaybackControlResult::NothingPlaying
+                        } else {
+                            PlaybackControlResult::Accepted
+                        }
+                    }
+                };
+                let _ = response.send(result);
+            }
+            VoiceWorkerInput::Voice(Ok(_)) => {}
+            VoiceWorkerInput::Voice(Err(error)) => {
+                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+            }
+            VoiceWorkerInput::Decoder(Some(DecoderEvent::Frame(frame))) => {
+                let Some(playback) = active.as_mut() else {
+                    continue;
+                };
+                if !playback.speaking {
+                    if let Err(error) = session.set_speaking(VoiceSpeakingFlags::MICROPHONE).await {
+                        break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                    }
+                    playback.speaking = true;
+                }
+                playback.pacer.wait_for_next_frame().await;
+                let frame = match frame.as_voice_frame() {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                    }
+                };
+                if let Err(error) = session.send_opus_frame(frame).await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
             }
+            VoiceWorkerInput::Decoder(Some(DecoderEvent::Finished)) => {
+                let Some(playback) = active.take() else {
+                    continue;
+                };
+                let track_id = playback.track_id;
+                let speaking = playback.speaking;
+                if speaking && let Err(error) = session.finish_speaking().await {
+                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                }
+                players.write().await.finish_current(guild_id, track_id);
+                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+            }
+            VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
+                let Some(playback) = active.take() else {
+                    continue;
+                };
+                let track_id = playback.track_id;
+                let speaking = playback.speaking;
+                warn!(
+                    guild_id = guild_id.get(),
+                    failure = ?failure,
+                    "track playback failed; advancing queue"
+                );
+                if speaking && let Err(error) = session.finish_speaking().await {
+                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                }
+                players.write().await.finish_current(guild_id, track_id);
+                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+            }
+            VoiceWorkerInput::Decoder(None) => {
+                let Some(playback) = active.take() else {
+                    continue;
+                };
+                let track_id = playback.track_id;
+                let speaking = playback.speaking;
+                warn!(
+                    guild_id = guild_id.get(),
+                    "decoder task ended without a terminal event; advancing queue"
+                );
+                if speaking && let Err(error) = session.finish_speaking().await {
+                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                }
+                players.write().await.finish_current(guild_id, track_id);
+                active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
+            }
         }
     };
+
+    players.write().await.clear(guild_id);
+    if let Some(playback) = active.take() {
+        playback.cancel();
+    }
 
     if let Err(error) = session.shutdown().await {
         warn!(
@@ -485,6 +786,72 @@ async fn run_voice_worker(
     }
 
     send_stopped(&worker_events, guild_id, generation, reason).await;
+}
+
+async fn start_next_playback(
+    guild_id: GuildId,
+    players: &Arc<RwLock<PlayerManager>>,
+    resolver: &Arc<dyn TrackResolver>,
+    decoder: &FfmpegOpusDecoder,
+) -> Option<ActivePlayback> {
+    let track = players.write().await.start_next(guild_id)?;
+    Some(ActivePlayback::spawn(
+        track,
+        resolver.clone(),
+        decoder.clone(),
+    ))
+}
+
+async fn recv_decoder_event(active: &mut Option<ActivePlayback>) -> Option<DecoderEvent> {
+    active.as_mut()?.events.recv().await
+}
+
+async fn run_decoder(
+    track: sonoryn::media::Track,
+    resolver: Arc<dyn TrackResolver>,
+    decoder: FfmpegOpusDecoder,
+    events: mpsc::Sender<DecoderEvent>,
+) {
+    let media = match resolver.resolve_media(&track).await {
+        Ok(media) => media,
+        Err(_) => {
+            let _ = events
+                .send(DecoderEvent::Failed(PlaybackFailure::MediaResolution))
+                .await;
+            return;
+        }
+    };
+
+    let mut stream = match decoder.open(&media) {
+        Ok(stream) => stream,
+        Err(_) => {
+            let _ = events
+                .send(DecoderEvent::Failed(PlaybackFailure::DecoderStart))
+                .await;
+            return;
+        }
+    };
+
+    loop {
+        match stream.next_frame().await {
+            Ok(Some(frame)) => {
+                if events.send(DecoderEvent::Frame(frame)).await.is_err() {
+                    let _ = stream.shutdown().await;
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = events.send(DecoderEvent::Finished).await;
+                return;
+            }
+            Err(_) => {
+                let _ = events
+                    .send(DecoderEvent::Failed(PlaybackFailure::DecoderRead))
+                    .await;
+                return;
+            }
+        }
+    }
 }
 
 async fn send_stopped(
