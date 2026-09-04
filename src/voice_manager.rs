@@ -648,6 +648,7 @@ async fn run_voice_worker(
             }
             VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Playback { action, response })) => {
                 let result = match action {
+                    PlaybackAction::CheckContext => PlaybackControlResult::Accepted,
                     PlaybackAction::Wake => {
                         if active.is_none() {
                             active =

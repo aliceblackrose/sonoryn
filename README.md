@@ -16,11 +16,15 @@ Implemented prototype commands:
 - `/skip` — cancel the current decoder and advance the FIFO queue.
 - `/pause` and `/resume` — pause/resume frame consumption without blocking Voice Gateway/DAVE processing.
 - `/stop` — cancel playback and clear the guild queue.
+- `/remove <position>` — remove a queued track by its one-based queue position.
+- `/move <from> <to>` — reorder queued tracks without touching the current track.
 - `/queue` — inspect the current and queued tracks.
 - `/nowplaying` — inspect the active track.
 - `/join` and `/leave` — explicitly manage the guild voice session.
 - `/health` — recheck the local `yt-dlp` and FFmpeg runtime dependencies.
 - `/ping` and `/voice` — basic Gateway/voice-state diagnostics.
+
+Queue-mutating commands use the same authoritative same-voice-channel check as playback controls. Their positions refer only to the queued entries shown under `Queue:`; the current track is not position 1.
 
 The remaining roadmap work is reliability, richer controls, persistence, sharding, and real-world Discord validation/hardening; the current target is a development prototype, not a production music service.
 
@@ -90,6 +94,8 @@ Then join a normal voice channel and use, for example:
 /play never gonna give you up
 /play https://www.youtube.com/watch?v=dQw4w9WgXcQ
 /queue
+/move 2 1
+/remove 2
 /pause
 /resume
 /skip

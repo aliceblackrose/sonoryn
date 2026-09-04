@@ -94,6 +94,34 @@ impl PlayerManager {
         player.queue.len()
     }
 
+    /// Removes one queued track by zero-based index without touching the active track.
+    pub fn remove_queued(&mut self, guild_id: GuildId, index: usize) -> Option<Track> {
+        self.players.get_mut(&guild_id)?.queue.remove(index)
+    }
+
+    /// Moves one queued track between zero-based indices and returns the moved track.
+    ///
+    /// Invalid source or destination indices leave the queue unchanged.
+    pub fn move_queued(
+        &mut self,
+        guild_id: GuildId,
+        from_index: usize,
+        to_index: usize,
+    ) -> Option<Track> {
+        let player = self.players.get_mut(&guild_id)?;
+        if from_index >= player.queue.len() || to_index >= player.queue.len() {
+            return None;
+        }
+        if from_index == to_index {
+            return player.queue.get(from_index).cloned();
+        }
+
+        let track = player.queue.remove(from_index)?;
+        let moved = track.clone();
+        player.queue.insert(to_index, track);
+        Some(moved)
+    }
+
     /// Promotes the next queued track to `now_playing` when the player is idle.
     ///
     /// A clone is returned for a playback worker while the authoritative track
@@ -239,6 +267,60 @@ mod tests {
 
         assert!(players.finish_current(guild_id, TrackId::new(1)));
         assert!(players.snapshot(guild_id).is_idle());
+    }
+
+    #[test]
+    fn remove_queued_does_not_touch_current_track() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "current"));
+        players.enqueue(guild_id, track(2, "remove"));
+        players.enqueue(guild_id, track(3, "keep"));
+        players.start_next(guild_id).expect("current track");
+
+        let removed = players.remove_queued(guild_id, 0).expect("queued track");
+        assert_eq!(removed.id, TrackId::new(2));
+
+        let snapshot = players.snapshot(guild_id);
+        assert_eq!(
+            snapshot.now_playing.as_ref().map(|track| track.id),
+            Some(TrackId::new(1))
+        );
+        assert_eq!(snapshot.queue.len(), 1);
+        assert_eq!(snapshot.queue[0].id, TrackId::new(3));
+    }
+
+    #[test]
+    fn move_queued_reorders_without_losing_tracks() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(2, "second"));
+        players.enqueue(guild_id, track(3, "third"));
+
+        let moved = players.move_queued(guild_id, 0, 2).expect("moved track");
+        assert_eq!(moved.id, TrackId::new(1));
+        assert_eq!(
+            players
+                .snapshot(guild_id)
+                .queue
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
+            [TrackId::new(2), TrackId::new(3), TrackId::new(1)]
+        );
+    }
+
+    #[test]
+    fn invalid_queue_move_is_non_destructive() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "first"));
+        players.enqueue(guild_id, track(2, "second"));
+        let before = players.snapshot(guild_id);
+
+        assert!(players.move_queued(guild_id, 0, 9).is_none());
+        assert_eq!(players.snapshot(guild_id), before);
     }
 
     #[test]
