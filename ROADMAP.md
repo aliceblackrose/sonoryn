@@ -14,7 +14,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 
 ### Gloamwire / command framework compatibility
 
-- [ ] Advance `gloam-macro-commands` from its Phase-5 Gloamwire pin to the Gloamwire revision used by Sonoryn.
+- [x] Advance `gloam-macro-commands` from its Phase-5 Gloamwire pin to the Gloamwire revision used by Sonoryn.
 - [x] Verify `gloam-commands` tests and compile-fail fixtures against that revision.
 - [x] Pin Sonoryn to exact compatible revisions of both repositories.
 - [x] Add a dependency-tree CI check so two incompatible `gloamwire` versions cannot silently enter the build.
@@ -68,32 +68,32 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 
 - [x] Produce Discord-compatible 48 kHz stereo Opus frames.
 - [x] Use 20 ms frames as the baseline (`960` RTP timestamp samples).
-- [ ] Keep decode/encode work off the Gateway task.
+- [x] Keep decode/encode work off the Gateway task.
 - [x] Bound decoder buffers to prevent unbounded memory growth.
-- [ ] Cleanly cancel decoder subprocesses/tasks when tracks are skipped.
+- [x] Cleanly cancel decoder subprocesses/tasks when tracks are skipped.
 
 ### Voice send path
 
-- [ ] Set Voice Gateway speaking state before media starts.
-- [ ] Apply DAVE protection to encoded Opus frames.
-- [ ] Packetize with Gloamwire RTP sequence/timestamp primitives.
-- [ ] Apply Gloamwire RTP transport encryption.
-- [ ] Pace frames with `VoiceFramePacer`.
-- [ ] Send the required Opus silence frames when transmission ends.
+- [x] Set Voice Gateway speaking state before media starts.
+- [x] Apply DAVE protection to encoded Opus frames.
+- [x] Packetize with Gloamwire RTP sequence/timestamp primitives.
+- [x] Apply Gloamwire RTP transport encryption.
+- [x] Pace frames with `VoiceFramePacer`.
+- [x] Send the required Opus silence frames when transmission ends.
 
 ## Phase 3 — Core music experience
 
-- [ ] `/play <query>`
-- [ ] `/skip`
-- [ ] `/pause`
-- [ ] `/resume`
-- [ ] `/stop`
-- [ ] Automatic join to the invoking member's voice channel.
-- [ ] Per-guild FIFO queue.
-- [ ] Automatic transition to the next track.
-- [ ] Clear, structured command responses for queued/playing/error states.
+- [x] `/play <query>`
+- [x] `/skip`
+- [x] `/pause`
+- [x] `/resume`
+- [x] `/stop`
+- [x] Automatic join to the invoking member's voice channel.
+- [x] Per-guild FIFO queue.
+- [x] Automatic transition to the next track.
+- [x] Clear, structured command responses for queued/playing/error states.
 - [ ] Idle timeout and automatic disconnect.
-- [ ] Require control commands to come from an appropriate voice context.
+- [x] Require control commands to come from an appropriate voice context.
 
 ## Phase 4 — Queue and playback controls
 
