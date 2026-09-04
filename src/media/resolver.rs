@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use super::{PlayableMedia, ResolvedTrack, Track, TrackRequest};
 
+pub const MAX_PLAYLIST_ITEMS: usize = 25;
+
 /// Boxed resolver future used to keep [`TrackResolver`] object-safe without an
 /// async-trait runtime dependency.
 pub type ResolveFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ResolveError>> + Send + 'a>>;
@@ -40,6 +42,18 @@ pub enum ResolveError {
 /// short-lived direct media information immediately before playback.
 pub trait TrackResolver: Send + Sync {
     fn resolve<'a>(&'a self, request: &'a TrackRequest) -> ResolveFuture<'a, ResolvedTrack>;
+
+    /// Expands a bounded playlist submission into durable queue metadata.
+    ///
+    /// Backends that do not have playlist-specific support safely fall back to
+    /// resolving one track, keeping the trait object-safe and source-agnostic.
+    fn resolve_playlist<'a>(
+        &'a self,
+        request: &'a TrackRequest,
+        _limit: usize,
+    ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
+        Box::pin(async move { self.resolve(request).await.map(|track| vec![track]) })
+    }
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia>;
 }

@@ -4,8 +4,8 @@ use serde_json::Value;
 use tokio::{process::Command, time::timeout};
 
 use super::{
-    PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track, TrackMetadata, TrackRequest,
-    TrackResolver, TrackSource,
+    MAX_PLAYLIST_ITEMS, PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track,
+    TrackMetadata, TrackRequest, TrackResolver, TrackSource,
 };
 
 const DEFAULT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -63,6 +63,28 @@ impl YtDlpResolver {
         parse_resolved_track(json, request)
     }
 
+    async fn playlist(
+        &self,
+        request: &TrackRequest,
+        limit: usize,
+    ) -> Result<Vec<ResolvedTrack>, ResolveError> {
+        let limit = limit.clamp(1, MAX_PLAYLIST_ITEMS);
+        let limit_arg = limit.to_string();
+        let target = request.input().trim();
+        let json = self
+            .run_json([
+                "--dump-single-json",
+                "--no-warnings",
+                "--skip-download",
+                "--yes-playlist",
+                "--playlist-end",
+                limit_arg.as_str(),
+                target,
+            ])
+            .await?;
+        parse_playlist_tracks(json, request, limit)
+    }
+
     async fn media(&self, track: &Track) -> Result<PlayableMedia, ResolveError> {
         let json = self
             .run_json([
@@ -104,6 +126,14 @@ impl YtDlpResolver {
 impl TrackResolver for YtDlpResolver {
     fn resolve<'a>(&'a self, request: &'a TrackRequest) -> ResolveFuture<'a, ResolvedTrack> {
         Box::pin(async move { self.metadata(request).await })
+    }
+
+    fn resolve_playlist<'a>(
+        &'a self,
+        request: &'a TrackRequest,
+        limit: usize,
+    ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
+        Box::pin(async move { self.playlist(request, limit).await })
     }
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {
@@ -165,13 +195,62 @@ fn parse_resolved_track(
     request: &TrackRequest,
 ) -> Result<ResolvedTrack, ResolveError> {
     let value = primary_entry(value)?;
-    let title = string_field(&value, "title")?;
+    parse_resolved_value(&value, Some(request.input()))
+}
+
+fn parse_playlist_tracks(
+    value: Value,
+    request: &TrackRequest,
+    limit: usize,
+) -> Result<Vec<ResolvedTrack>, ResolveError> {
+    let Some(entries) = value.get("entries") else {
+        return parse_resolved_track(value, request).map(|track| vec![track]);
+    };
+    let Some(entries) = entries.as_array() else {
+        return Err(ResolveError::NoResults);
+    };
+
+    let mut tracks = Vec::with_capacity(limit.min(entries.len()));
+    let mut first_error = None;
+    for entry in entries.iter().filter(|entry| !entry.is_null()).take(limit) {
+        match parse_resolved_value(entry, None) {
+            Ok(track) => tracks.push(track),
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+
+    if tracks.is_empty() {
+        Err(first_error.unwrap_or(ResolveError::NoResults))
+    } else {
+        Ok(tracks)
+    }
+}
+
+fn parse_resolved_value(
+    value: &Value,
+    fallback_url: Option<&str>,
+) -> Result<ResolvedTrack, ResolveError> {
+    let title = string_field(value, "title")?;
     let webpage_url = value
         .get("webpage_url")
         .and_then(Value::as_str)
         .or_else(|| value.get("original_url").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|url| is_http_url(url))
+        })
         .map(str::to_owned)
-        .or_else(|| is_http_url(request.input()).then(|| request.input().trim().to_owned()))
+        .or_else(|| {
+            fallback_url
+                .filter(|url| is_http_url(url.trim()))
+                .map(|url| url.trim().to_owned())
+        })
         .ok_or(ResolveError::MissingField {
             field: "webpage_url",
         })?;
@@ -189,7 +268,7 @@ fn parse_resolved_track(
         .get("thumbnail")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| last_thumbnail_url(&value));
+        .or_else(|| last_thumbnail_url(value));
     let extractor = value
         .get("extractor_key")
         .or_else(|| value.get("extractor"))
@@ -252,7 +331,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{parse_playable_media, parse_resolved_track, resolution_target};
+    use super::{
+        parse_playable_media, parse_playlist_tracks, parse_resolved_track, resolution_target,
+    };
     use crate::media::{TrackRequest, TrackSource};
 
     #[test]
@@ -293,6 +374,61 @@ mod tests {
             Some(Duration::from_millis(61_500))
         );
         assert_eq!(resolved.locator, "https://www.youtube.com/watch?v=abc");
+    }
+
+    #[test]
+    fn playlist_expansion_honors_the_item_limit() {
+        let request = TrackRequest::new("https://example.test/playlist").expect("request");
+        let tracks = parse_playlist_tracks(
+            json!({
+                "entries": [
+                    {
+                        "title": "One",
+                        "webpage_url": "https://example.test/watch/1",
+                        "extractor_key": "Youtube"
+                    },
+                    {
+                        "title": "Two",
+                        "webpage_url": "https://example.test/watch/2",
+                        "extractor_key": "Youtube"
+                    },
+                    {
+                        "title": "Three",
+                        "webpage_url": "https://example.test/watch/3",
+                        "extractor_key": "Youtube"
+                    }
+                ]
+            }),
+            &request,
+            2,
+        )
+        .expect("playlist");
+
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].metadata.title, "One");
+        assert_eq!(tracks[1].metadata.title, "Two");
+    }
+
+    #[test]
+    fn playlist_expansion_skips_bad_entries_when_valid_tracks_remain() {
+        let request = TrackRequest::new("https://example.test/playlist").expect("request");
+        let tracks = parse_playlist_tracks(
+            json!({
+                "entries": [
+                    {"title": "Missing URL"},
+                    {
+                        "title": "Playable",
+                        "webpage_url": "https://example.test/watch/2"
+                    }
+                ]
+            }),
+            &request,
+            25,
+        )
+        .expect("playlist");
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].metadata.title, "Playable");
     }
 
     #[test]
