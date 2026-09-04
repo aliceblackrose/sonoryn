@@ -97,7 +97,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 
 ## Phase 4 — Queue and playback controls
 
-- [ ] `/seek`
+- [x] `/seek`
 - [x] `/remove`
 - [x] `/move`
 - [x] `/shuffle`
@@ -105,7 +105,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] Queue pagination.
 - [ ] Playlist expansion with explicit item limits.
 - [x] Previous/history behavior.
-- [ ] Volume control with clipping-safe gain handling.
+- [x] Volume control with clipping-safe gain handling.
 
 ## Phase 5 — Reliability and observability
 
