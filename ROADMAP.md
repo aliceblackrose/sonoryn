@@ -98,8 +98,8 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 ## Phase 4 — Queue and playback controls
 
 - [ ] `/seek`
-- [ ] `/remove`
-- [ ] `/move`
+- [x] `/remove`
+- [x] `/move`
 - [ ] `/shuffle`
 - [ ] Loop modes: off, track, queue.
 - [ ] Queue pagination.
