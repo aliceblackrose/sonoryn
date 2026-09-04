@@ -55,7 +55,8 @@ pub(crate) async fn loop_mode(
             "track" => LoopMode::Track,
             "queue" => LoopMode::Queue,
             _ => {
-                ctx.reply_ephemeral("That loop mode is not supported.").await?;
+                ctx.reply_ephemeral("That loop mode is not supported.")
+                    .await?;
                 return Ok(());
             }
         };

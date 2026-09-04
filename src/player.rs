@@ -350,13 +350,20 @@ mod tests {
         assert_eq!(players.loop_mode(guild_id), LoopMode::Off);
         players.set_loop_mode(guild_id, LoopMode::Track);
         assert!(players.complete_current(guild_id, TrackId::new(1)));
-        assert_eq!(players.start_next(guild_id).expect("looped track").id, TrackId::new(1));
+        assert_eq!(
+            players.start_next(guild_id).expect("looped track").id,
+            TrackId::new(1)
+        );
 
         players.set_loop_mode(guild_id, LoopMode::Queue);
         assert!(players.complete_current(guild_id, TrackId::new(1)));
         let snapshot = players.snapshot(guild_id);
         assert_eq!(
-            snapshot.queue.iter().map(|track| track.id).collect::<Vec<_>>(),
+            snapshot
+                .queue
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
             [TrackId::new(2), TrackId::new(1)]
         );
     }
