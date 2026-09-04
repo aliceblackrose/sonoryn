@@ -101,7 +101,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [x] `/remove`
 - [x] `/move`
 - [x] `/shuffle`
-- [ ] Loop modes: off, track, queue.
+- [x] Loop modes: off, track, queue.
 - [ ] Queue pagination.
 - [ ] Playlist expansion with explicit item limits.
 - [ ] Previous/history behavior.
