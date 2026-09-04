@@ -44,6 +44,7 @@ async fn main() -> MainResult<()> {
         state.player_manager.clone(),
         state.history_manager.clone(),
         state.resolver.clone(),
+        state.metrics.clone(),
     );
     let framework = Framework::builder(state.clone())
         .commands(command_list())
@@ -74,7 +75,7 @@ async fn main() -> MainResult<()> {
             worker_event = voice_events.recv() => {
                 if let Some(worker_event) = worker_event {
                     voice_manager
-                        .handle_worker_event(worker_event, &mut gateway)
+                        .handle_worker_event(worker_event, &mut gateway, bot_user_id)
                         .await;
                 }
             }
