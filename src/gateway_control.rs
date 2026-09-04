@@ -13,6 +13,7 @@ pub(crate) enum GatewayControl {
     },
     Playback {
         guild_id: GuildId,
+        channel_id: ChannelId,
         action: PlaybackAction,
         response: oneshot::Sender<PlaybackControlResult>,
     },
@@ -31,6 +32,7 @@ pub(crate) enum PlaybackAction {
 pub(crate) enum PlaybackControlResult {
     Accepted,
     NotConnected,
+    WrongVoiceChannel { channel_id: ChannelId },
     NothingPlaying,
     AlreadyPaused,
     AlreadyPlaying,
