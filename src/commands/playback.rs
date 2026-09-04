@@ -29,7 +29,10 @@ pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
     Ok(())
 }
 
-#[command(description = "Show the track Sonoryn is currently playing", guild_only)]
+#[command(
+    description = "Show the track Sonoryn is currently playing",
+    guild_only
+)]
 pub(crate) async fn nowplaying(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
         ctx.reply_ephemeral("This command can only be used in a server.")
@@ -171,7 +174,10 @@ mod tests {
 
     #[test]
     fn empty_queue_has_compact_response() {
-        assert_eq!(render_queue(&PlayerSnapshot::default()), "The queue is empty.");
+        assert_eq!(
+            render_queue(&PlayerSnapshot::default()),
+            "The queue is empty."
+        );
     }
 
     #[test]

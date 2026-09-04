@@ -166,7 +166,10 @@ mod tests {
         assert_eq!(started.id, TrackId::new(1));
 
         let after = players.snapshot(guild_id);
-        assert_eq!(after.now_playing.as_ref().map(|track| track.id), Some(TrackId::new(1)));
+        assert_eq!(
+            after.now_playing.as_ref().map(|track| track.id),
+            Some(TrackId::new(1))
+        );
         assert_eq!(after.queue.len(), 1);
         assert_eq!(before.queue.len(), 2);
     }
