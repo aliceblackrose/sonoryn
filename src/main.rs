@@ -3,7 +3,7 @@ mod gateway_control;
 mod state;
 mod voice_manager;
 
-use std::{env, io};
+use std::{env, io, process::Output};
 
 use gloam_commands::{DispatchOutcome, Framework, Registration};
 use gloamwire::{
@@ -11,7 +11,7 @@ use gloamwire::{
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
     model::{GuildId, UserId},
 };
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{process::Command, sync::mpsc, task::JoinSet};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +19,7 @@ use crate::{commands::command_list, state::AppState, voice_manager::VoiceManager
 
 type MainResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const GATEWAY_CONTROL_CAPACITY: usize = 64;
+const TOOL_VERSION_LIMIT: usize = 160;
 
 #[tokio::main]
 async fn main() -> MainResult<()> {
@@ -27,6 +28,7 @@ async fn main() -> MainResult<()> {
     let token = env::var("DISCORD_TOKEN")
         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "DISCORD_TOKEN is required"))?;
     let registration = registration_from_env()?;
+    verify_runtime_dependencies().await?;
 
     let rest = RestClient::new(&token)?;
     let gateway_bot = rest.get_gateway_bot().await?;
@@ -147,6 +149,53 @@ fn registration_from_env() -> MainResult<Registration> {
         Err(env::VarError::NotPresent) => Ok(Registration::Global),
         Err(error) => Err(Box::new(error)),
     }
+}
+
+async fn verify_runtime_dependencies() -> MainResult<()> {
+    verify_runtime_dependency("yt-dlp", &["--version"]).await?;
+    verify_runtime_dependency("ffmpeg", &["-version"]).await?;
+    Ok(())
+}
+
+async fn verify_runtime_dependency(binary: &str, args: &[&str]) -> MainResult<()> {
+    let output = Command::new(binary)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "required runtime dependency `{binary}` is not available on PATH: {error}"
+                ),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "runtime dependency `{binary}` failed its startup check with status {}",
+            output.status
+        ))
+        .into());
+    }
+
+    if let Some(version) = first_output_line(&output) {
+        info!(tool = binary, version = %version, "runtime dependency available");
+    } else {
+        info!(tool = binary, "runtime dependency available");
+    }
+    Ok(())
+}
+
+fn first_output_line(output: &Output) -> Option<String> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(TOOL_VERSION_LIMIT).collect())
 }
 
 fn reap_command_tasks(tasks: &mut JoinSet<()>) {
