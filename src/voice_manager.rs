@@ -4,12 +4,14 @@ use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
     model::{ChannelId, GuildId, UserId},
     voice::{
-        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceFramePacer, VoiceGatewayEvent,
-        VoiceRendezvous, VoiceRendezvousStatus, VoiceResult, VoiceSpeakingFlags,
+        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceError, VoiceFramePacer,
+        VoiceGatewayEvent, VoiceRecoveryOutcome, VoiceRendezvous, VoiceRendezvousStatus,
+        VoiceResult, VoiceSpeakingFlags,
     },
 };
 use sonoryn::{
     media::{EncodedOpusFrame, FfmpegDecodeOptions, FfmpegOpusDecoder, TrackResolver},
+    metrics::Metrics,
     player::{LoopMode, PlayerManager},
 };
 use tokio::{
@@ -28,6 +30,9 @@ use crate::{
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
+const MAX_VOICE_RESTARTS: u8 = 3;
+const MAX_GUILD_VOICE_WORKERS: usize = 64;
 const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
@@ -52,6 +57,12 @@ struct VoiceWorkerServices {
     history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
+    metrics: Arc<Metrics>,
+}
+
+struct RestartBudget {
+    window_started: Instant,
+    attempts: u8,
 }
 
 enum VoiceWorkerCommand {
@@ -67,7 +78,22 @@ pub(crate) enum VoiceWorkerStopReason {
     Requested,
     IdleTimedOut,
     ConnectFailed(String),
+    RestartRequired(String),
     VoiceFailed(String),
+    TerminalVoiceFailure(String),
+    Crashed(String),
+}
+
+impl VoiceWorkerStopReason {
+    fn is_restartable(&self) -> bool {
+        matches!(
+            self,
+            Self::ConnectFailed(_)
+                | Self::RestartRequired(_)
+                | Self::VoiceFailed(_)
+                | Self::Crashed(_)
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -86,12 +112,14 @@ pub(crate) enum VoiceWorkerEvent {
 pub(crate) struct VoiceManager {
     pending: HashMap<GuildId, PendingJoin>,
     workers: HashMap<GuildId, VoiceWorkerHandle>,
+    restart_budgets: HashMap<GuildId, RestartBudget>,
     worker_events: mpsc::Sender<VoiceWorkerEvent>,
     tasks: JoinSet<()>,
     players: Arc<RwLock<PlayerManager>>,
     history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
+    metrics: Arc<Metrics>,
     next_id: u64,
 }
 
@@ -100,18 +128,21 @@ impl VoiceManager {
         players: Arc<RwLock<PlayerManager>>,
         history: Arc<RwLock<HistoryManager>>,
         resolver: Arc<dyn TrackResolver>,
+        metrics: Arc<Metrics>,
     ) -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
         let (worker_events, receiver) = mpsc::channel(VOICE_EVENT_CAPACITY);
         (
             Self {
                 pending: HashMap::new(),
                 workers: HashMap::new(),
+                restart_budgets: HashMap::new(),
                 worker_events,
                 tasks: JoinSet::new(),
                 players,
                 history,
                 resolver,
                 decoder: FfmpegOpusDecoder::new(),
+                metrics,
                 next_id: 0,
             },
             receiver,
@@ -130,8 +161,15 @@ impl VoiceManager {
                 channel_id,
                 response,
             } => {
-                self.join_voice(guild_id, channel_id, response, gateway, bot_user_id)
-                    .await;
+                self.request_voice_join(
+                    guild_id,
+                    channel_id,
+                    response,
+                    gateway,
+                    bot_user_id,
+                    true,
+                )
+                .await;
             }
             GatewayControl::LeaveVoice { guild_id, response } => {
                 self.leave_voice(guild_id, response, gateway).await;
@@ -166,6 +204,7 @@ impl VoiceManager {
                     completed.push((guild_id, RendezvousOutcome::ServerUnavailable));
                 }
                 Err(error) => {
+                    self.metrics.increment_failures();
                     warn!(
                         guild_id = guild_id.get(),
                         error = %error,
@@ -183,6 +222,7 @@ impl VoiceManager {
             match outcome {
                 RendezvousOutcome::Ready(info) => self.start_worker(guild_id, pending, info),
                 RendezvousOutcome::ServerUnavailable => {
+                    self.metrics.increment_failures();
                     let _ = pending.response.send(VoiceJoinResult::Failed(
                         "Discord has not allocated a voice server for this guild yet.".to_owned(),
                     ));
@@ -198,6 +238,7 @@ impl VoiceManager {
         &mut self,
         event: VoiceWorkerEvent,
         gateway: &mut GatewayConnection,
+        bot_user_id: Option<UserId>,
     ) {
         match event {
             VoiceWorkerEvent::JoinTimedOut {
@@ -213,6 +254,7 @@ impl VoiceManager {
                         .pending
                         .remove(&guild_id)
                         .expect("pending join was checked above");
+                    self.metrics.increment_failures();
                     let _ = pending.response.send(VoiceJoinResult::Failed(
                         "Discord did not complete the voice rendezvous in time.".to_owned(),
                     ));
@@ -225,20 +267,23 @@ impl VoiceManager {
                 generation,
                 reason,
             } => {
-                let is_current = self
-                    .workers
-                    .get(&guild_id)
-                    .is_some_and(|worker| worker.generation == generation);
-                if !is_current {
+                let Some(worker) = self.workers.get(&guild_id) else {
+                    return;
+                };
+                if worker.generation != generation {
                     return;
                 }
-
+                let channel_id = worker.channel_id;
                 self.workers.remove(&guild_id);
-                match reason {
+
+                let restartable = reason.is_restartable();
+                match &reason {
                     VoiceWorkerStopReason::Requested => {
+                        self.restart_budgets.remove(&guild_id);
                         info!(guild_id = guild_id.get(), "voice worker stopped");
                     }
                     VoiceWorkerStopReason::IdleTimedOut => {
+                        self.restart_budgets.remove(&guild_id);
                         info!(
                             guild_id = guild_id.get(),
                             idle_seconds = IDLE_TIMEOUT.as_secs(),
@@ -247,21 +292,55 @@ impl VoiceManager {
                         disconnect_gateway_voice(gateway, guild_id).await;
                     }
                     VoiceWorkerStopReason::ConnectFailed(error) => {
+                        self.metrics.increment_failures();
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
                             "voice worker failed to connect"
                         );
-                        disconnect_gateway_voice(gateway, guild_id).await;
+                    }
+                    VoiceWorkerStopReason::RestartRequired(error) => {
+                        self.metrics.increment_failures();
+                        warn!(
+                            guild_id = guild_id.get(),
+                            error = %error,
+                            "voice credentials became invalid; restarting main-Gateway rendezvous"
+                        );
                     }
                     VoiceWorkerStopReason::VoiceFailed(error) => {
+                        self.metrics.increment_failures();
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
                             "voice worker stopped after voice transport failure"
                         );
+                    }
+                    VoiceWorkerStopReason::TerminalVoiceFailure(error) => {
+                        self.metrics.increment_failures();
+                        self.restart_budgets.remove(&guild_id);
+                        warn!(
+                            guild_id = guild_id.get(),
+                            error = %error,
+                            "voice worker stopped after terminal Discord voice close"
+                        );
+                        self.players.write().await.clear(guild_id);
                         disconnect_gateway_voice(gateway, guild_id).await;
                     }
+                    VoiceWorkerStopReason::Crashed(error) => {
+                        self.metrics.increment_failures();
+                        warn!(
+                            guild_id = guild_id.get(),
+                            error = %error,
+                            "voice worker panicked; supervising restart"
+                        );
+                    }
+                }
+
+                if restartable {
+                    self.requeue_current_for_restart(guild_id).await;
+                    disconnect_gateway_voice(gateway, guild_id).await;
+                    self.restart_voice(guild_id, channel_id, gateway, bot_user_id)
+                        .await;
                 }
             }
         }
@@ -304,18 +383,19 @@ impl VoiceManager {
 
         while let Some(result) = self.tasks.join_next().await {
             if let Err(error) = result {
-                error!(error = %error, "voice worker task failed during shutdown");
+                error!(error = %error, "voice supervisor task failed during shutdown");
             }
         }
     }
 
-    async fn join_voice(
+    async fn request_voice_join(
         &mut self,
         guild_id: GuildId,
         channel_id: ChannelId,
         response: oneshot::Sender<VoiceJoinResult>,
         gateway: &mut GatewayConnection,
         bot_user_id: Option<UserId>,
+        reset_restart_budget: bool,
     ) {
         if let Some(worker) = self.workers.get(&guild_id) {
             let _ = response.send(VoiceJoinResult::AlreadyConnected {
@@ -329,6 +409,12 @@ impl VoiceManager {
             });
             return;
         }
+        if self.workers.len().saturating_add(self.pending.len()) >= MAX_GUILD_VOICE_WORKERS {
+            let _ = response.send(VoiceJoinResult::Failed(format!(
+                "Sonoryn is at its process limit of {MAX_GUILD_VOICE_WORKERS} active voice guilds."
+            )));
+            return;
+        }
 
         let Some(bot_user_id) = bot_user_id else {
             let _ = response.send(VoiceJoinResult::Failed(
@@ -336,9 +422,13 @@ impl VoiceManager {
             ));
             return;
         };
+        if reset_restart_budget {
+            self.restart_budgets.remove(&guild_id);
+        }
 
         let update = UpdateVoiceState::new(guild_id, Some(channel_id)).with_self_deaf(true);
         if let Err(error) = gateway.update_voice_state(&update).await {
+            self.metrics.increment_failures();
             let _ = response.send(VoiceJoinResult::Failed(format!(
                 "Failed to request the voice join: {error}"
             )));
@@ -374,12 +464,79 @@ impl VoiceManager {
         );
     }
 
+    async fn restart_voice(
+        &mut self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        gateway: &mut GatewayConnection,
+        bot_user_id: Option<UserId>,
+    ) {
+        let Some(bot_user_id) = bot_user_id else {
+            warn!(
+                guild_id = guild_id.get(),
+                "cannot restart voice worker before the Discord Gateway is ready"
+            );
+            return;
+        };
+        if !self.take_restart_slot(guild_id) {
+            warn!(
+                guild_id = guild_id.get(),
+                attempts = MAX_VOICE_RESTARTS,
+                window_seconds = RESTART_WINDOW.as_secs(),
+                "voice restart budget exhausted"
+            );
+            return;
+        }
+
+        self.metrics.increment_reconnects();
+        let (response, _result) = oneshot::channel();
+        self.request_voice_join(
+            guild_id,
+            channel_id,
+            response,
+            gateway,
+            Some(bot_user_id),
+            false,
+        )
+        .await;
+    }
+
+    fn take_restart_slot(&mut self, guild_id: GuildId) -> bool {
+        let now = Instant::now();
+        let budget = self.restart_budgets.entry(guild_id).or_insert(RestartBudget {
+            window_started: now,
+            attempts: 0,
+        });
+        if now.duration_since(budget.window_started) >= RESTART_WINDOW {
+            budget.window_started = now;
+            budget.attempts = 0;
+        }
+        if budget.attempts >= MAX_VOICE_RESTARTS {
+            return false;
+        }
+        budget.attempts += 1;
+        true
+    }
+
+    async fn requeue_current_for_restart(&self, guild_id: GuildId) {
+        let mut players = self.players.write().await;
+        let current = players.snapshot(guild_id).now_playing;
+        let Some(current) = current else {
+            return;
+        };
+        if players.finish_current(guild_id, current.id) {
+            let position = players.enqueue(guild_id, current);
+            let _ = players.move_queued(guild_id, position.saturating_sub(1), 0);
+        }
+    }
+
     async fn leave_voice(
         &mut self,
         guild_id: GuildId,
         response: oneshot::Sender<VoiceLeaveResult>,
         gateway: &mut GatewayConnection,
     ) {
+        self.restart_budgets.remove(&guild_id);
         if let Some(pending) = self.pending.remove(&guild_id) {
             let channel_id = pending.channel_id;
             let _ = pending.response.send(VoiceJoinResult::Cancelled);
@@ -392,6 +549,7 @@ impl VoiceManager {
                     let _ = response.send(VoiceLeaveResult::CancelledJoin { channel_id });
                 }
                 Err(error) => {
+                    self.metrics.increment_failures();
                     let _ = response.send(VoiceLeaveResult::Failed(format!(
                         "Cancelled the pending join, but failed to leave voice: {error}"
                     )));
@@ -417,6 +575,7 @@ impl VoiceManager {
                 });
             }
             Err(error) => {
+                self.metrics.increment_failures();
                 let _ = response.send(VoiceLeaveResult::Failed(format!(
                     "Stopped the voice worker, but failed to leave voice: {error}"
                 )));
@@ -448,6 +607,7 @@ impl VoiceManager {
             .await
             && let VoiceWorkerCommand::Playback { response, .. } = error.0
         {
+            self.metrics.increment_failures();
             let _ = response.send(PlaybackControlResult::Failed(
                 "The guild voice worker is unavailable.".to_owned(),
             ));
@@ -472,16 +632,31 @@ impl VoiceManager {
             history: self.history.clone(),
             resolver: self.resolver.clone(),
             decoder: self.decoder.clone(),
+            metrics: self.metrics.clone(),
         };
-        self.tasks.spawn(run_voice_worker(
-            guild_id,
-            generation,
-            pending.channel_id,
-            info,
-            receiver,
-            pending.response,
-            services,
-        ));
+        let crash_events = self.worker_events.clone();
+        let channel_id = pending.channel_id;
+        let response = pending.response;
+        self.tasks.spawn(async move {
+            let worker = tokio::spawn(run_voice_worker(
+                guild_id,
+                generation,
+                channel_id,
+                info,
+                receiver,
+                response,
+                services,
+            ));
+            if let Err(error) = worker.await {
+                send_stopped(
+                    &crash_events,
+                    guild_id,
+                    generation,
+                    VoiceWorkerStopReason::Crashed(error.to_string()),
+                )
+                .await;
+            }
+        });
     }
 
     fn next_id(&mut self) -> u64 {
@@ -492,7 +667,7 @@ impl VoiceManager {
     fn reap_tasks(&mut self) {
         while let Some(result) = self.tasks.try_join_next() {
             if let Err(error) = result {
-                error!(error = %error, "voice worker task panicked");
+                error!(error = %error, "voice supervisor task panicked");
             }
         }
     }
@@ -562,6 +737,7 @@ enum PlaybackFailure {
     MediaResolution,
     DecoderStart,
     DecoderRead,
+    DecoderCrashed,
 }
 
 enum DecoderEvent {
@@ -585,15 +761,19 @@ async fn run_voice_worker(
         history,
         resolver,
         decoder,
+        metrics,
     } = services;
+    let started = Instant::now();
     let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
     tokio::pin!(connect);
 
     let mut session = tokio::select! {
         result = &mut connect => {
+            metrics.record_startup_latency(started.elapsed());
             match result {
                 Ok(session) => session,
                 Err(error) => {
+                    metrics.increment_failures();
                     let message = error.to_string();
                     let _ = response.send(VoiceJoinResult::Failed(format!(
                         "Failed to establish the Discord voice session: {message}"
@@ -740,6 +920,7 @@ async fn run_voice_worker(
                             let _ = response.send(PlaybackControlResult::NothingPlaying);
                             continue;
                         };
+                        metrics.increment_skips();
                         let track_id = playback.track_id;
                         let current = {
                             let players = players.read().await;
@@ -865,6 +1046,27 @@ async fn run_voice_worker(
                 let _ = response.send(result);
             }
             VoiceWorkerInput::Voice(Ok(_)) => {}
+            VoiceWorkerInput::Voice(Err(VoiceError::Closed { code, reason })) => {
+                match session.recover_after_close(code).await {
+                    Ok(VoiceRecoveryOutcome::Resumed) => {
+                        metrics.increment_reconnects();
+                        info!(
+                            guild_id = guild_id.get(),
+                            "resumed Discord voice Gateway session"
+                        );
+                        continue;
+                    }
+                    Ok(VoiceRecoveryOutcome::RestartRequired) => {
+                        break VoiceWorkerStopReason::RestartRequired(reason);
+                    }
+                    Ok(VoiceRecoveryOutcome::Stopped) => {
+                        break VoiceWorkerStopReason::TerminalVoiceFailure(reason);
+                    }
+                    Err(error) => {
+                        break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                    }
+                }
+            }
             VoiceWorkerInput::Voice(Err(error)) => {
                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
             }
@@ -921,6 +1123,7 @@ async fn run_voice_worker(
                 let Some(playback) = active.take() else {
                     continue;
                 };
+                metrics.increment_failures();
                 let track_id = playback.track_id;
                 let speaking = playback.speaking;
                 warn!(
@@ -940,10 +1143,15 @@ async fn run_voice_worker(
                 let Some(playback) = active.take() else {
                     continue;
                 };
+                metrics.increment_underruns();
+                metrics.increment_failures();
                 let track_id = playback.track_id;
                 let speaking = playback.speaking;
+                let task_error = playback.task.await.err();
                 warn!(
                     guild_id = guild_id.get(),
+                    error = ?task_error,
+                    failure = ?PlaybackFailure::DecoderCrashed,
                     "decoder task ended without a terminal event; advancing queue"
                 );
                 if speaking && let Err(error) = session.finish_speaking().await {
@@ -982,7 +1190,14 @@ async fn run_voice_worker(
         }
     };
 
-    players.write().await.clear(guild_id);
+    if matches!(
+        &reason,
+        VoiceWorkerStopReason::Requested
+            | VoiceWorkerStopReason::IdleTimedOut
+            | VoiceWorkerStopReason::TerminalVoiceFailure(_)
+    ) {
+        players.write().await.clear(guild_id);
+    }
     if let Some(playback) = active.take() {
         playback.cancel();
     }
