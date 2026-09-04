@@ -19,6 +19,8 @@ Implemented prototype commands:
 - `/queue` — inspect the current and queued tracks.
 - `/nowplaying` — inspect the active track.
 - `/join` and `/leave` — explicitly manage the guild voice session.
+- `/health` — recheck the local `yt-dlp` and FFmpeg runtime dependencies.
+- `/ping` and `/voice` — basic Gateway/voice-state diagnostics.
 
 The remaining roadmap work is reliability, richer controls, persistence, sharding, and real-world Discord validation/hardening; the current target is a development prototype, not a production music service.
 
@@ -63,6 +65,8 @@ Install:
 - FFmpeg with `libopus` support available as `ffmpeg` on `PATH`;
 - a Discord application/bot with access to the target guild and permission to connect/speak in the target voice channel.
 
+Sonoryn performs a startup preflight for `yt-dlp --version` and `ffmpeg -version` before opening the Discord connection. A missing or non-runnable dependency therefore fails startup with an actionable error instead of failing only when the first track starts decoding.
+
 Configure:
 
 ```text
@@ -82,6 +86,7 @@ cargo run
 Then join a normal voice channel and use, for example:
 
 ```text
+/health
 /play never gonna give you up
 /play https://www.youtube.com/watch?v=dQw4w9WgXcQ
 /queue
