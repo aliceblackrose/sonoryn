@@ -3,3 +3,4 @@
 pub mod media;
 pub mod metrics;
 pub mod player;
+pub mod redaction;
