@@ -128,10 +128,12 @@ impl VoiceManager {
             }
             GatewayControl::Playback {
                 guild_id,
+                channel_id,
                 action,
                 response,
             } => {
-                self.route_playback(guild_id, action, response).await;
+                self.route_playback(guild_id, channel_id, action, response)
+                    .await;
             }
         }
         self.reap_tasks();
@@ -407,17 +409,21 @@ impl VoiceManager {
     async fn route_playback(
         &self,
         guild_id: GuildId,
+        channel_id: ChannelId,
         action: PlaybackAction,
         response: oneshot::Sender<PlaybackControlResult>,
     ) {
-        let Some(commands) = self
-            .workers
-            .get(&guild_id)
-            .map(|worker| worker.commands.clone())
-        else {
+        let Some(worker) = self.workers.get(&guild_id) else {
             let _ = response.send(PlaybackControlResult::NotConnected);
             return;
         };
+        if worker.channel_id != channel_id {
+            let _ = response.send(PlaybackControlResult::WrongVoiceChannel {
+                channel_id: worker.channel_id,
+            });
+            return;
+        }
+        let commands = worker.commands.clone();
 
         if let Err(error) = commands
             .send(VoiceWorkerCommand::Playback { action, response })
