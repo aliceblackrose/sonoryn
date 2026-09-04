@@ -35,8 +35,11 @@ async fn main() -> MainResult<()> {
     let mut gateway = GatewayConnection::connect(config).await?;
 
     let (gateway_control, mut gateway_controls) = mpsc::channel(GATEWAY_CONTROL_CAPACITY);
-    let (mut voice_manager, mut voice_events) = VoiceManager::new();
     let state = AppState::new(gateway_control);
+    let (mut voice_manager, mut voice_events) = VoiceManager::new(
+        state.player_manager.clone(),
+        state.resolver.clone(),
+    );
     let framework = Framework::builder(state.clone())
         .commands(command_list())
         .registration(registration)
