@@ -913,14 +913,9 @@ async fn run_voice_worker(
                 {
                     history.write().await.push(guild_id, track);
                 }
-                active = start_next_playback(
-                    guild_id,
-                    &players,
-                    &resolver,
-                    &decoder,
-                    volume_percent,
-                )
-                .await;
+                active =
+                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
+                        .await;
             }
             VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
                 let Some(playback) = active.take() else {
@@ -937,14 +932,9 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
-                active = start_next_playback(
-                    guild_id,
-                    &players,
-                    &resolver,
-                    &decoder,
-                    volume_percent,
-                )
-                .await;
+                active =
+                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
+                        .await;
             }
             VoiceWorkerInput::Decoder(None) => {
                 let Some(playback) = active.take() else {
@@ -960,14 +950,9 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 players.write().await.finish_current(guild_id, track_id);
-                active = start_next_playback(
-                    guild_id,
-                    &players,
-                    &resolver,
-                    &decoder,
-                    volume_percent,
-                )
-                .await;
+                active =
+                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
+                        .await;
             }
             VoiceWorkerInput::IdleTimeout => {
                 idle_deadline = None;
@@ -984,14 +969,9 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::IdleTimedOut;
                 }
 
-                active = start_next_playback(
-                    guild_id,
-                    &players,
-                    &resolver,
-                    &decoder,
-                    volume_percent,
-                )
-                .await;
+                active =
+                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
+                        .await;
             }
         }
 
