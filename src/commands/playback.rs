@@ -18,7 +18,17 @@ const TRACK_TITLE_LIMIT: usize = 96;
 const ERROR_MESSAGE_LIMIT: usize = 240;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![play, skip, pause, resume, stop, queue, nowplaying]
+    commands![
+        play,
+        skip,
+        pause,
+        resume,
+        stop,
+        remove,
+        move_track,
+        queue,
+        nowplaying
+    ]
 }
 
 #[command(description = "Play a song or add it to the queue", guild_only)]
@@ -203,6 +213,95 @@ pub(crate) async fn stop(ctx: Context<AppState>) -> Result<()> {
     .await
 }
 
+#[command(description = "Remove a queued track by its queue position", guild_only)]
+pub(crate) async fn remove(
+    ctx: Context<AppState>,
+    #[description = "One-based queue position"]
+    #[min = 1]
+    position: i64,
+) -> Result<()> {
+    let Some(guild_id) = require_queue_control_context(&ctx).await? else {
+        return Ok(());
+    };
+    let Some(index) = queue_index(position) else {
+        ctx.reply_ephemeral("That queue position is invalid.").await?;
+        return Ok(());
+    };
+
+    let removed = {
+        let mut players = ctx.data().player_manager.write().await;
+        players.remove_queued(guild_id, index)
+    };
+
+    match removed {
+        Some(track) => {
+            ctx.reply_ephemeral(format!(
+                "Removed {} from queue position {position}.",
+                format_track(&track)
+            ))
+            .await?;
+        }
+        None => {
+            ctx.reply_ephemeral(format!("Queue position {position} does not exist."))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[command(
+    name = "move",
+    description = "Move a queued track to another queue position",
+    guild_only
+)]
+pub(crate) async fn move_track(
+    ctx: Context<AppState>,
+    #[description = "Current one-based queue position"]
+    #[min = 1]
+    from: i64,
+    #[description = "New one-based queue position"]
+    #[min = 1]
+    to: i64,
+) -> Result<()> {
+    let Some(guild_id) = require_queue_control_context(&ctx).await? else {
+        return Ok(());
+    };
+    let (Some(from_index), Some(to_index)) = (queue_index(from), queue_index(to)) else {
+        ctx.reply_ephemeral("One of those queue positions is invalid.")
+            .await?;
+        return Ok(());
+    };
+
+    let moved = {
+        let mut players = ctx.data().player_manager.write().await;
+        players.move_queued(guild_id, from_index, to_index)
+    };
+
+    match moved {
+        Some(track) if from == to => {
+            ctx.reply_ephemeral(format!(
+                "{} is already at queue position {from}.",
+                format_track(&track)
+            ))
+            .await?;
+        }
+        Some(track) => {
+            ctx.reply_ephemeral(format!(
+                "Moved {} from queue position {from} to {to}.",
+                format_track(&track)
+            ))
+            .await?;
+        }
+        None => {
+            ctx.reply_ephemeral(format!(
+                "Cannot move queue position {from} to {to}; one of those positions does not exist."
+            ))
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 #[command(description = "Show the current music queue", guild_only)]
 pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
@@ -283,6 +382,59 @@ async fn run_simple_control(
     Ok(())
 }
 
+async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option<GuildId>> {
+    let interaction = ctx.interaction();
+    let Some(guild_id) = interaction.guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(None);
+    };
+    let Some(user_id) = invoking_user_id(interaction) else {
+        ctx.reply_ephemeral("I could not determine the invoking user.")
+            .await?;
+        return Ok(None);
+    };
+    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
+        ctx.reply_ephemeral("Join my voice channel first to edit the queue.")
+            .await?;
+        return Ok(None);
+    };
+
+    match playback_control(
+        ctx.data(),
+        guild_id,
+        channel_id,
+        PlaybackAction::CheckContext,
+    )
+    .await
+    {
+        PlaybackControlResult::Accepted => Ok(Some(guild_id)),
+        PlaybackControlResult::NotConnected => {
+            ctx.reply_ephemeral("I am not connected to voice here.").await?;
+            Ok(None)
+        }
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => {
+            ctx.reply_ephemeral(format!(
+                "I am connected to <#{}>. Join that channel to edit the queue.",
+                channel_id.get()
+            ))
+            .await?;
+            Ok(None)
+        }
+        PlaybackControlResult::Failed(error) => {
+            ctx.reply_ephemeral(error).await?;
+            Ok(None)
+        }
+        PlaybackControlResult::NothingPlaying
+        | PlaybackControlResult::AlreadyPaused
+        | PlaybackControlResult::AlreadyPlaying => {
+            ctx.reply_ephemeral("The voice worker rejected the queue-control context.")
+                .await?;
+            Ok(None)
+        }
+    }
+}
+
 async fn current_voice_channel(
     data: &AppState,
     guild_id: GuildId,
@@ -355,6 +507,12 @@ fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserI
         .and_then(|member| member.user.as_ref())
         .map(|user| user.id)
         .or_else(|| interaction.user.as_ref().map(|user| user.id))
+}
+
+fn queue_index(position: i64) -> Option<usize> {
+    position
+        .checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
 }
 
 fn render_queue(snapshot: &PlayerSnapshot) -> String {
@@ -455,7 +613,7 @@ mod tests {
         player::PlayerSnapshot,
     };
 
-    use super::{format_duration, render_queue};
+    use super::{format_duration, queue_index, render_queue};
 
     fn track(id: u64, title: &str) -> Track {
         Track::from_resolved(
@@ -499,6 +657,14 @@ mod tests {
         assert!(rendered.contains("10. **track 11**"));
         assert!(!rendered.contains("11. **track 12**"));
         assert!(rendered.contains("… and 2 more."));
+    }
+
+    #[test]
+    fn queue_positions_convert_to_zero_based_indices() {
+        assert_eq!(queue_index(1), Some(0));
+        assert_eq!(queue_index(5), Some(4));
+        assert_eq!(queue_index(0), None);
+        assert_eq!(queue_index(i64::MIN), None);
     }
 
     #[test]
