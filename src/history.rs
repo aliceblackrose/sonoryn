@@ -94,8 +94,14 @@ mod tests {
         history.push(guild_id, track(1));
         history.push(guild_id, track(2));
 
-        assert_eq!(history.pop_latest(guild_id).map(|track| track.id.get()), Some(2));
-        assert_eq!(history.pop_latest(guild_id).map(|track| track.id.get()), Some(1));
+        assert_eq!(
+            history.pop_latest(guild_id).map(|track| track.id.get()),
+            Some(2)
+        );
+        assert_eq!(
+            history.pop_latest(guild_id).map(|track| track.id.get()),
+            Some(1)
+        );
         assert!(history.pop_latest(guild_id).is_none());
     }
 }
