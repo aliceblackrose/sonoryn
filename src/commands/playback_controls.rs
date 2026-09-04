@@ -13,7 +13,10 @@ pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
     commands![seek, volume]
 }
 
-#[command(description = "Seek the current track to a playback position", guild_only)]
+#[command(
+    description = "Seek the current track to a playback position",
+    guild_only
+)]
 pub(crate) async fn seek(
     ctx: Context<AppState>,
     #[description = "Position as seconds, M:SS, or H:MM:SS"]
@@ -27,7 +30,8 @@ pub(crate) async fn seek(
         return Ok(());
     };
     let Ok(position_millis) = u64::try_from(position.as_millis()) else {
-        ctx.reply_ephemeral("That seek position is too large.").await?;
+        ctx.reply_ephemeral("That seek position is too large.")
+            .await?;
         return Ok(());
     };
     let Some((guild_id, channel_id)) = require_voice_channel(&ctx).await? else {
@@ -103,9 +107,7 @@ pub(crate) async fn volume(
     Ok(())
 }
 
-async fn require_voice_channel(
-    ctx: &Context<AppState>,
-) -> Result<Option<(GuildId, ChannelId)>> {
+async fn require_voice_channel(ctx: &Context<AppState>) -> Result<Option<(GuildId, ChannelId)>> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
         ctx.reply_ephemeral("This command can only be used in a server.")
@@ -196,9 +198,7 @@ fn parse_seek_position(value: &str) -> Option<Duration> {
         }
         _ => return None,
     };
-    total_seconds
-        .checked_mul(1_000)
-        .map(Duration::from_millis)
+    total_seconds.checked_mul(1_000).map(Duration::from_millis)
 }
 
 fn format_position(position: Duration) -> String {
