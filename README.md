@@ -8,7 +8,7 @@ The project is intentionally protocol-first. Sonoryn does not introduce a second
 
 **Working-prototype stage.**
 
-The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves URLs/free-text searches with `yt-dlp`, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path.
+The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves URLs/free-text searches with `yt-dlp`, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path. Connected guild voice workers automatically disconnect after five minutes with no active track and an empty queue; paused playback remains active and is not considered idle.
 
 Implemented prototype commands:
 
@@ -97,7 +97,7 @@ Then join a normal voice channel and use, for example:
 /leave
 ```
 
-Sonoryn resolves direct media immediately before decoding. A queued track therefore stores its public source locator and metadata, not a short-lived CDN URL.
+Sonoryn resolves direct media immediately before decoding. A queued track therefore stores its public source locator and metadata, not a short-lived CDN URL. When the player becomes idle, Sonoryn keeps the voice session warm for five minutes before disconnecting automatically; new queued work arriving at the timeout boundary is rechecked before the disconnect is allowed to proceed.
 
 ## Architecture
 
