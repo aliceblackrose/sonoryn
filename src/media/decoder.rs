@@ -3,6 +3,7 @@ use std::{
     io,
     path::PathBuf,
     process::{ExitStatus, Stdio},
+    time::Duration,
 };
 
 use gloamwire::voice::{VoiceOpusFrame, VoiceOpusFrameDuration, VoiceResult};
@@ -68,6 +69,59 @@ pub enum DecodeError {
     ProcessFailed { status: ExitStatus },
 }
 
+/// Per-process FFmpeg controls applied when a decoder stream starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FfmpegDecodeOptions {
+    start_at: Duration,
+    volume_percent: u8,
+}
+
+impl Default for FfmpegDecodeOptions {
+    fn default() -> Self {
+        Self {
+            start_at: Duration::ZERO,
+            volume_percent: 100,
+        }
+    }
+}
+
+impl FfmpegDecodeOptions {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub const fn with_start_at(mut self, start_at: Duration) -> Self {
+        self.start_at = start_at;
+        self
+    }
+
+    /// Sets attenuation in the inclusive `0..=100` range.
+    ///
+    /// Values above 100 are clamped so this option never amplifies the source
+    /// and therefore cannot introduce clipping through gain above unity.
+    #[must_use]
+    pub const fn with_volume_percent(mut self, volume_percent: u8) -> Self {
+        self.volume_percent = if volume_percent > 100 {
+            100
+        } else {
+            volume_percent
+        };
+        self
+    }
+
+    #[must_use]
+    pub const fn start_at(self) -> Duration {
+        self.start_at
+    }
+
+    #[must_use]
+    pub const fn volume_percent(self) -> u8 {
+        self.volume_percent
+    }
+}
+
 /// FFmpeg-backed transcoder that normalizes arbitrary supported audio inputs to
 /// Discord-compatible 48 kHz stereo Opus with fixed 20 ms packets.
 #[derive(Debug, Clone)]
@@ -95,11 +149,20 @@ impl FfmpegOpusDecoder {
         self
     }
 
+    /// Starts FFmpeg with default playback controls.
+    pub fn open(&self, media: &PlayableMedia) -> Result<FfmpegOpusStream, DecodeError> {
+        self.open_with_options(media, FfmpegDecodeOptions::default())
+    }
+
     /// Starts FFmpeg and returns a stream of complete encoded Opus packets.
     ///
     /// The child is configured with `kill_on_drop`, so dropping the returned
     /// stream cancels the decoder instead of leaving a subprocess behind.
-    pub fn open(&self, media: &PlayableMedia) -> Result<FfmpegOpusStream, DecodeError> {
+    pub fn open_with_options(
+        &self,
+        media: &PlayableMedia,
+        options: FfmpegDecodeOptions,
+    ) -> Result<FfmpegOpusStream, DecodeError> {
         let binary = self.binary.display().to_string();
         let mut command = Command::new(&self.binary);
         command
@@ -115,6 +178,9 @@ impl FfmpegOpusDecoder {
         if let Some(headers) = render_http_headers(&media.http_headers) {
             command.arg("-headers").arg(headers);
         }
+        if !options.start_at.is_zero() {
+            command.arg("-ss").arg(format_seek_offset(options.start_at));
+        }
 
         command
             .arg("-i")
@@ -127,7 +193,14 @@ impl FfmpegOpusDecoder {
             .arg("-ac")
             .arg("2")
             .arg("-ar")
-            .arg("48000")
+            .arg("48000");
+
+        if options.volume_percent < 100 {
+            let ratio = f64::from(options.volume_percent) / 100.0;
+            command.arg("-filter:a").arg(format!("volume={ratio:.2}"));
+        }
+
+        command
             .arg("-c:a")
             .arg("libopus")
             .arg("-application")
@@ -219,6 +292,10 @@ impl FfmpegOpusStream {
         self.finished = true;
         Ok(())
     }
+}
+
+fn format_seek_offset(offset: Duration) -> String {
+    format!("{}.{:03}", offset.as_secs(), offset.subsec_millis())
 }
 
 fn render_http_headers(headers: &[(String, String)]) -> Option<String> {
@@ -369,11 +446,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, time::Duration};
 
     use gloamwire::voice::VoiceOpusFrameDuration;
 
-    use super::{EncodedOpusFrame, OggPacketReader, render_http_headers};
+    use super::{
+        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, format_seek_offset,
+        render_http_headers,
+    };
 
     #[tokio::test]
     async fn reads_multiple_packets_from_one_ogg_page() {
@@ -415,6 +495,16 @@ mod tests {
         let voice = frame.as_voice_frame().expect("voice frame");
         assert_eq!(voice.payload(), &[1, 2, 3]);
         assert_eq!(voice.duration(), VoiceOpusFrameDuration::TwentyMs);
+    }
+
+    #[test]
+    fn decoder_options_bound_volume_and_preserve_seek_offset() {
+        let options = FfmpegDecodeOptions::new()
+            .with_start_at(Duration::from_millis(90_123))
+            .with_volume_percent(150);
+        assert_eq!(options.start_at(), Duration::from_millis(90_123));
+        assert_eq!(options.volume_percent(), 100);
+        assert_eq!(format_seek_offset(options.start_at()), "90.123");
     }
 
     #[test]
