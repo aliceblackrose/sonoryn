@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use gloamwire::model::GuildId;
+use rand::seq::SliceRandom;
 
 use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
 
@@ -120,6 +121,22 @@ impl PlayerManager {
         let moved = track.clone();
         player.queue.insert(to_index, track);
         Some(moved)
+    }
+
+    /// Randomizes only the queued tracks and returns the number of tracks shuffled.
+    ///
+    /// The active track is intentionally excluded from the shuffle.
+    pub fn shuffle_queued(&mut self, guild_id: GuildId) -> usize {
+        let Some(player) = self.players.get_mut(&guild_id) else {
+            return 0;
+        };
+        let count = player.queue.len();
+        if count < 2 {
+            return count;
+        }
+
+        player.queue.make_contiguous().shuffle(&mut rand::rng());
+        count
     }
 
     /// Promotes the next queued track to `now_playing` when the player is idle.
@@ -320,6 +337,44 @@ mod tests {
         let before = players.snapshot(guild_id);
 
         assert!(players.move_queued(guild_id, 0, 9).is_none());
+        assert_eq!(players.snapshot(guild_id), before);
+    }
+
+    #[test]
+    fn shuffle_queued_preserves_current_track_and_membership() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        players.enqueue(guild_id, track(1, "current"));
+        for id in 2..=7 {
+            players.enqueue(guild_id, track(id, &format!("track {id}")));
+        }
+        players.start_next(guild_id).expect("current track");
+
+        assert_eq!(players.shuffle_queued(guild_id), 6);
+        let snapshot = players.snapshot(guild_id);
+        assert_eq!(
+            snapshot.now_playing.as_ref().map(|track| track.id),
+            Some(TrackId::new(1))
+        );
+
+        let mut ids = snapshot
+            .queue
+            .iter()
+            .map(|track| track.id.get())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, [2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn shuffle_queued_handles_short_queues_without_mutation() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        assert_eq!(players.shuffle_queued(guild_id), 0);
+
+        players.enqueue(guild_id, track(1, "only"));
+        let before = players.snapshot(guild_id);
+        assert_eq!(players.shuffle_queued(guild_id), 1);
         assert_eq!(players.snapshot(guild_id), before);
     }
 
