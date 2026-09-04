@@ -71,8 +71,20 @@ impl YtDlpResolver {
         let limit = limit.clamp(1, MAX_PLAYLIST_ITEMS);
         let limit_arg = limit.to_string();
         let target = request.input().trim();
-        let json = self
-            .run_json([
+        let json = if is_search_target(target) {
+            self.run_json([
+                "--dump-single-json",
+                "--no-warnings",
+                "--skip-download",
+                "--flat-playlist",
+                "--yes-playlist",
+                "--playlist-end",
+                limit_arg.as_str(),
+                target,
+            ])
+            .await?
+        } else {
+            self.run_json([
                 "--dump-single-json",
                 "--no-warnings",
                 "--skip-download",
@@ -81,7 +93,8 @@ impl YtDlpResolver {
                 limit_arg.as_str(),
                 target,
             ])
-            .await?;
+            .await?
+        };
         parse_playlist_tracks(json, request, limit)
     }
 
@@ -174,6 +187,12 @@ fn resolution_target(input: &str) -> String {
 
 fn is_http_url(input: &str) -> bool {
     input.starts_with("https://") || input.starts_with("http://")
+}
+
+fn is_search_target(input: &str) -> bool {
+    input
+        .split_once(':')
+        .is_some_and(|(prefix, query)| prefix.starts_with("ytsearch") && !query.trim().is_empty())
 }
 
 fn primary_entry(value: Value) -> Result<Value, ResolveError> {
@@ -332,7 +351,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        parse_playable_media, parse_playlist_tracks, parse_resolved_track, resolution_target,
+        is_search_target, parse_playable_media, parse_playlist_tracks, parse_resolved_track,
+        resolution_target,
     };
     use crate::media::{TrackRequest, TrackSource};
 
@@ -346,6 +366,16 @@ mod tests {
             resolution_target("https://example.test/watch/1"),
             "https://example.test/watch/1"
         );
+    }
+
+    #[test]
+    fn recognizes_bounded_youtube_search_targets() {
+        assert!(is_search_target("ytsearch10:artist song"));
+        assert!(is_search_target("ytsearch:artist song"));
+        assert!(!is_search_target(
+            "https://example.test/ytsearch10:artist song"
+        ));
+        assert!(!is_search_target("ytsearch10:"));
     }
 
     #[test]
