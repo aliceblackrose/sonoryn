@@ -165,9 +165,7 @@ async fn verify_runtime_dependency(binary: &str, args: &[&str]) -> MainResult<()
         .map_err(|error| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!(
-                    "required runtime dependency `{binary}` is not available on PATH: {error}"
-                ),
+                format!("required runtime dependency `{binary}` is not available on PATH: {error}"),
             )
         })?;
 
