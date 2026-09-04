@@ -113,32 +113,32 @@ pub(crate) async fn queue_page(
     Ok(())
 }
 
-#[command(description = "Play the previous track from this guild's history", guild_only)]
+#[command(
+    description = "Play the previous track from this guild's history",
+    guild_only
+)]
 pub(crate) async fn previous(ctx: Context<AppState>) -> Result<()> {
-    let Some((guild_id, channel_id)) = require_voice_channel(&ctx, "control playback").await? else {
+    let Some((guild_id, channel_id)) = require_voice_channel(&ctx, "control playback").await?
+    else {
         return Ok(());
     };
 
-    let message = match playback_action(
-        ctx.data(),
-        guild_id,
-        channel_id,
-        PlaybackAction::Previous,
-    )
-    .await
-    {
-        PlaybackControlResult::Accepted => "Playing the previous track.".to_owned(),
-        PlaybackControlResult::NothingPlaying => "There is no previous track in history.".to_owned(),
-        PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
-        PlaybackControlResult::WrongVoiceChannel { channel_id } => format!(
-            "I am connected to <#{}>. Join that channel to control playback.",
-            channel_id.get()
-        ),
-        PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
-            "The voice worker rejected the previous-track request.".to_owned()
-        }
-        PlaybackControlResult::Failed(error) => error,
-    };
+    let message =
+        match playback_action(ctx.data(), guild_id, channel_id, PlaybackAction::Previous).await {
+            PlaybackControlResult::Accepted => "Playing the previous track.".to_owned(),
+            PlaybackControlResult::NothingPlaying => {
+                "There is no previous track in history.".to_owned()
+            }
+            PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
+            PlaybackControlResult::WrongVoiceChannel { channel_id } => format!(
+                "I am connected to <#{}>. Join that channel to control playback.",
+                channel_id.get()
+            ),
+            PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
+                "The voice worker rejected the previous-track request.".to_owned()
+            }
+            PlaybackControlResult::Failed(error) => error,
+        };
     ctx.reply_ephemeral(message).await?;
     Ok(())
 }
