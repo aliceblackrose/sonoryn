@@ -7,8 +7,8 @@ description = "A protocol-first Discord music bot built on Gloamwire"
 repository = "https://github.com/aliceblackrose/sonoryn"
 
 [dependencies]
-gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "d55510f87051c28a6be71b62ef275155934c1edd", features = ["tracing"] }
-gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "a39239aa73803432339f3d31ba3626071593fcd9", features = ["cache", "dave-davey", "tracing", "voice"] }
+gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "3bf89f40dee9f106b29d91ed8efa06c8ccf6955a", features = ["tracing"] }
+gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "ce7bedae12c255249d8823f5332f87566c7b363d", features = ["cache", "dave-davey", "tracing", "voice"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
