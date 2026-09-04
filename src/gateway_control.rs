@@ -23,6 +23,7 @@ pub(crate) enum GatewayControl {
 pub(crate) enum PlaybackAction {
     CheckContext,
     Wake,
+    Previous,
     Skip,
     Pause,
     Resume,
