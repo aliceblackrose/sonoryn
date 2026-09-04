@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use super::{PlayableMedia, ResolvedTrack, Track, TrackRequest};
 
+pub const MAX_PLAYLIST_ITEMS: usize = 25;
+
 /// Boxed resolver future used to keep [`TrackResolver`] object-safe without an
 /// async-trait runtime dependency.
 pub type ResolveFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ResolveError>> + Send + 'a>>;
