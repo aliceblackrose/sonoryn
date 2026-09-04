@@ -9,9 +9,7 @@ use sonoryn::{
 use tokio::sync::oneshot;
 
 use crate::{
-    gateway_control::{
-        GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult,
-    },
+    gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
     state::AppState,
 };
 
@@ -63,10 +61,7 @@ pub(crate) async fn play(
     let resolved = match ctx.data().resolver.resolve(&request).await {
         Ok(resolved) => resolved,
         Err(error) => {
-            let message = escape_markdown(&truncate_chars(
-                &error.to_string(),
-                ERROR_MESSAGE_LIMIT,
-            ));
+            let message = escape_markdown(&truncate_chars(&error.to_string(), ERROR_MESSAGE_LIMIT));
             ctx.reply_ephemeral(format!("I could not resolve that track: {message}"))
                 .await?;
             return Ok(());
@@ -114,12 +109,7 @@ pub(crate) async fn play(
 
     let (track, queue_position) = {
         let mut players = ctx.data().player_manager.write().await;
-        players.enqueue_resolved(
-            guild_id,
-            request,
-            RequestedBy::new(user_id),
-            resolved,
-        )
+        players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
     };
 
     match playback_control(ctx.data(), guild_id, PlaybackAction::Wake).await {
