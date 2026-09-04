@@ -19,15 +19,7 @@ const ERROR_MESSAGE_LIMIT: usize = 240;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
     commands![
-        play,
-        skip,
-        pause,
-        resume,
-        stop,
-        remove,
-        move_track,
-        queue,
-        nowplaying
+        play, skip, pause, resume, stop, remove, move_track, queue, nowplaying
     ]
 }
 
@@ -213,7 +205,10 @@ pub(crate) async fn stop(ctx: Context<AppState>) -> Result<()> {
     .await
 }
 
-#[command(description = "Remove a queued track by its queue position", guild_only)]
+#[command(
+    description = "Remove a queued track by its queue position",
+    guild_only
+)]
 pub(crate) async fn remove(
     ctx: Context<AppState>,
     #[description = "One-based queue position"]
@@ -224,7 +219,8 @@ pub(crate) async fn remove(
         return Ok(());
     };
     let Some(index) = queue_index(position) else {
-        ctx.reply_ephemeral("That queue position is invalid.").await?;
+        ctx.reply_ephemeral("That queue position is invalid.")
+            .await?;
         return Ok(());
     };
 
@@ -410,7 +406,8 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
     {
         PlaybackControlResult::Accepted => Ok(Some(guild_id)),
         PlaybackControlResult::NotConnected => {
-            ctx.reply_ephemeral("I am not connected to voice here.").await?;
+            ctx.reply_ephemeral("I am not connected to voice here.")
+                .await?;
             Ok(None)
         }
         PlaybackControlResult::WrongVoiceChannel { channel_id } => {
