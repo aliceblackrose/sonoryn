@@ -1,6 +1,11 @@
+use std::fmt::Write;
+
 use gloam_commands::prelude::*;
 use gloamwire::model::{GuildId, UserId};
-use sonoryn::player::LoopMode;
+use sonoryn::{
+    media::Track,
+    player::{LoopMode, PlayerSnapshot},
+};
 use tokio::sync::oneshot;
 
 use crate::{
@@ -8,8 +13,11 @@ use crate::{
     state::AppState,
 };
 
+const QUEUE_PAGE_SIZE: usize = 10;
+const TRACK_TITLE_LIMIT: usize = 96;
+
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![shuffle, loop_mode]
+    commands![shuffle, loop_mode, queue_page]
 }
 
 #[command(description = "Shuffle the queued tracks", guild_only)]
@@ -73,12 +81,133 @@ pub(crate) async fn loop_mode(
     Ok(())
 }
 
+#[command(
+    name = "queue-page",
+    description = "Show a page of the current music queue",
+    guild_only
+)]
+pub(crate) async fn queue_page(
+    ctx: Context<AppState>,
+    #[description = "One-based queue page"]
+    #[min = 1]
+    page: Option<i64>,
+) -> Result<()> {
+    let Some(guild_id) = ctx.interaction().guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(());
+    };
+    let page = page.unwrap_or(1);
+    let Some(page_index) = page_index(page) else {
+        ctx.reply_ephemeral("That queue page is invalid.").await?;
+        return Ok(());
+    };
+
+    let snapshot = {
+        let players = ctx.data().player_manager.read().await;
+        players.snapshot(guild_id)
+    };
+    ctx.reply_ephemeral(render_queue_page(&snapshot, page_index))
+        .await?;
+    Ok(())
+}
+
 fn loop_mode_name(mode: LoopMode) -> &'static str {
     match mode {
         LoopMode::Off => "off",
         LoopMode::Track => "track",
         LoopMode::Queue => "queue",
     }
+}
+
+fn page_index(page: i64) -> Option<usize> {
+    page.checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
+}
+
+fn render_queue_page(snapshot: &PlayerSnapshot, page_index: usize) -> String {
+    if snapshot.is_idle() {
+        return "The queue is empty.".to_owned();
+    }
+
+    let page_count = snapshot.queue.len().max(1).div_ceil(QUEUE_PAGE_SIZE);
+    if page_index >= page_count {
+        return format!(
+            "Queue page {} does not exist. There {} {} page{}.",
+            page_index + 1,
+            if page_count == 1 { "is" } else { "are" },
+            page_count,
+            if page_count == 1 { "" } else { "s" }
+        );
+    }
+
+    let mut output = String::new();
+    if let Some(track) = &snapshot.now_playing {
+        let _ = writeln!(output, "Now playing: {}", format_track(track));
+        output.push('\n');
+    }
+
+    let start = page_index * QUEUE_PAGE_SIZE;
+    let end = (start + QUEUE_PAGE_SIZE).min(snapshot.queue.len());
+    let _ = writeln!(output, "Queue — page {}/{}:", page_index + 1, page_count);
+    for (offset, track) in snapshot.queue[start..end].iter().enumerate() {
+        let _ = writeln!(output, "{}. {}", start + offset + 1, format_track(track));
+    }
+
+    output.trim_end().to_owned()
+}
+
+fn format_track(track: &Track) -> String {
+    let title = escape_markdown(&truncate_chars(&track.metadata.title, TRACK_TITLE_LIMIT));
+    let artist = track
+        .metadata
+        .artist
+        .as_deref()
+        .map(|artist| escape_markdown(&truncate_chars(artist, TRACK_TITLE_LIMIT)));
+
+    let mut output = format!("**{title}**");
+    if let Some(artist) = artist {
+        let _ = write!(output, " — {artist}");
+    }
+    if let Some(duration) = track.metadata.duration {
+        let _ = write!(output, " ({})", format_duration(duration.as_secs()));
+    }
+    output
+}
+
+fn format_duration(total_seconds: u64) -> String {
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let mut truncated: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        truncated.push('…');
+    }
+    truncated
+}
+
+fn escape_markdown(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' | '*' | '_' | '~' | '`' | '>' | '|' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            '@' => escaped.push_str("@\u{200b}"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option<GuildId>> {
@@ -167,14 +296,73 @@ fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserI
 
 #[cfg(test)]
 mod tests {
-    use sonoryn::player::LoopMode;
+    use std::time::Duration;
 
-    use super::loop_mode_name;
+    use gloamwire::model::UserId;
+    use sonoryn::{
+        media::{
+            RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
+        },
+        player::{LoopMode, PlayerSnapshot},
+    };
+
+    use super::{loop_mode_name, page_index, render_queue_page};
+
+    fn track(id: u64) -> Track {
+        Track::from_resolved(
+            TrackId::new(id),
+            TrackRequest::new(format!("track {id}")).expect("request"),
+            RequestedBy::new(UserId::new(7)),
+            ResolvedTrack {
+                source: TrackSource::YouTube,
+                metadata: TrackMetadata {
+                    title: format!("track {id}"),
+                    artist: Some("Artist".to_owned()),
+                    duration: Some(Duration::from_secs(65)),
+                    artwork_url: None,
+                    webpage_url: format!("https://example.test/{id}"),
+                },
+                locator: format!("https://example.test/{id}"),
+            },
+        )
+    }
 
     #[test]
     fn loop_mode_names_are_stable() {
         assert_eq!(loop_mode_name(LoopMode::Off), "off");
         assert_eq!(loop_mode_name(LoopMode::Track), "track");
         assert_eq!(loop_mode_name(LoopMode::Queue), "queue");
+    }
+
+    #[test]
+    fn queue_page_uses_global_positions() {
+        let snapshot = PlayerSnapshot {
+            now_playing: Some(track(1)),
+            queue: (2..=23).map(track).collect(),
+        };
+        let rendered = render_queue_page(&snapshot, 1);
+        assert!(rendered.contains("Queue — page 2/3:"));
+        assert!(rendered.contains("11. **track 12**"));
+        assert!(rendered.contains("20. **track 21**"));
+        assert!(!rendered.contains("21. **track 22**"));
+    }
+
+    #[test]
+    fn queue_page_rejects_out_of_range_pages() {
+        let snapshot = PlayerSnapshot {
+            now_playing: None,
+            queue: (1..=3).map(track).collect(),
+        };
+        assert_eq!(
+            render_queue_page(&snapshot, 2),
+            "Queue page 3 does not exist. There is 1 page."
+        );
+    }
+
+    #[test]
+    fn page_values_convert_to_zero_based_indices() {
+        assert_eq!(page_index(1), Some(0));
+        assert_eq!(page_index(2), Some(1));
+        assert_eq!(page_index(0), None);
     }
 }
