@@ -112,7 +112,7 @@ pub(crate) async fn play(
         players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
     };
 
-    match playback_control(ctx.data(), guild_id, PlaybackAction::Wake).await {
+    match playback_control(ctx.data(), guild_id, channel_id, PlaybackAction::Wake).await {
         PlaybackControlResult::Accepted => {
             let snapshot = {
                 let players = ctx.data().player_manager.read().await;
@@ -136,6 +136,13 @@ pub(crate) async fn play(
         PlaybackControlResult::NotConnected => {
             ctx.reply_ephemeral("The voice worker disconnected before playback could start.")
                 .await?;
+        }
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => {
+            ctx.reply_ephemeral(format!(
+                "I am connected to <#{}>. Join that channel to control playback.",
+                channel_id.get()
+            ))
+            .await?;
         }
         PlaybackControlResult::NothingPlaying => {
             ctx.reply_ephemeral("The track was queued, but the player did not start it.")
@@ -165,42 +172,24 @@ pub(crate) async fn skip(ctx: Context<AppState>) -> Result<()> {
 
 #[command(description = "Pause the current track", guild_only)]
 pub(crate) async fn pause(ctx: Context<AppState>) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
-            .await?;
-        return Ok(());
-    };
-
-    let message = match playback_control(ctx.data(), guild_id, PlaybackAction::Pause).await {
-        PlaybackControlResult::Accepted => "Paused playback.".to_owned(),
-        PlaybackControlResult::AlreadyPaused => "Playback is already paused.".to_owned(),
-        PlaybackControlResult::NothingPlaying => "Nothing is playing right now.".to_owned(),
-        PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
-        PlaybackControlResult::AlreadyPlaying => "Playback is already running.".to_owned(),
-        PlaybackControlResult::Failed(error) => error,
-    };
-    ctx.reply_ephemeral(message).await?;
-    Ok(())
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Pause,
+        "Paused playback.",
+        "Nothing is playing right now.",
+    )
+    .await
 }
 
 #[command(description = "Resume a paused track", guild_only)]
 pub(crate) async fn resume(ctx: Context<AppState>) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
-            .await?;
-        return Ok(());
-    };
-
-    let message = match playback_control(ctx.data(), guild_id, PlaybackAction::Resume).await {
-        PlaybackControlResult::Accepted => "Resumed playback.".to_owned(),
-        PlaybackControlResult::AlreadyPlaying => "Playback is already running.".to_owned(),
-        PlaybackControlResult::NothingPlaying => "Nothing is playing right now.".to_owned(),
-        PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
-        PlaybackControlResult::AlreadyPaused => "Playback is already paused.".to_owned(),
-        PlaybackControlResult::Failed(error) => error,
-    };
-    ctx.reply_ephemeral(message).await?;
-    Ok(())
+    run_simple_control(
+        &ctx,
+        PlaybackAction::Resume,
+        "Resumed playback.",
+        "Nothing is playing right now.",
+    )
+    .await
 }
 
 #[command(description = "Stop playback and clear the queue", guild_only)]
@@ -261,16 +250,31 @@ async fn run_simple_control(
     accepted: &str,
     idle: &str,
 ) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
+    let interaction = ctx.interaction();
+    let Some(guild_id) = interaction.guild_id else {
         ctx.reply_ephemeral("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
+    let Some(user_id) = invoking_user_id(interaction) else {
+        ctx.reply_ephemeral("I could not determine the invoking user.")
+            .await?;
+        return Ok(());
+    };
+    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
+        ctx.reply_ephemeral("Join my voice channel first to control playback.")
+            .await?;
+        return Ok(());
+    };
 
-    let message = match playback_control(ctx.data(), guild_id, action).await {
+    let message = match playback_control(ctx.data(), guild_id, channel_id, action).await {
         PlaybackControlResult::Accepted => accepted.to_owned(),
         PlaybackControlResult::NothingPlaying => idle.to_owned(),
         PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => format!(
+            "I am connected to <#{}>. Join that channel to control playback.",
+            channel_id.get()
+        ),
         PlaybackControlResult::AlreadyPaused => "Playback is already paused.".to_owned(),
         PlaybackControlResult::AlreadyPlaying => "Playback is already running.".to_owned(),
         PlaybackControlResult::Failed(error) => error,
@@ -317,6 +321,7 @@ async fn ensure_voice(
 async fn playback_control(
     data: &AppState,
     guild_id: GuildId,
+    channel_id: ChannelId,
     action: PlaybackAction,
 ) -> PlaybackControlResult {
     let (response, result) = oneshot::channel();
@@ -324,6 +329,7 @@ async fn playback_control(
         .gateway_control
         .send(GatewayControl::Playback {
             guild_id,
+            channel_id,
             action,
             response,
         })
