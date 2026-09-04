@@ -25,6 +25,8 @@ pub(crate) enum PlaybackAction {
     Wake,
     Previous,
     Skip,
+    Seek { position_millis: u64 },
+    Volume { percent: u8 },
     Pause,
     Resume,
     Stop,
