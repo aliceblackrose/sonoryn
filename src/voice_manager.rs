@@ -801,14 +801,20 @@ async fn run_voice_worker(
                 let track_id = playback.track_id;
                 let (current, loop_mode) = {
                     let players = players.read().await;
-                    (players.snapshot(guild_id).now_playing, players.loop_mode(guild_id))
+                    (
+                        players.snapshot(guild_id).now_playing,
+                        players.loop_mode(guild_id),
+                    )
                 };
                 let speaking = playback.speaking;
                 if speaking && let Err(error) = session.finish_speaking().await {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 let completed = players.write().await.complete_current(guild_id, track_id);
-                if completed && loop_mode != LoopMode::Track && let Some(track) = current {
+                if completed
+                    && loop_mode != LoopMode::Track
+                    && let Some(track) = current
+                {
                     history.write().await.push(guild_id, track);
                 }
                 active = start_next_playback(guild_id, &players, &resolver, &decoder).await;
