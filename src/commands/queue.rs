@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use gloam_commands::prelude::*;
-use gloamwire::model::{GuildId, UserId};
+use gloamwire::model::{ChannelId, GuildId, UserId};
 use sonoryn::{
     media::Track,
     player::{LoopMode, PlayerSnapshot},
@@ -14,10 +14,11 @@ use crate::{
 };
 
 const QUEUE_PAGE_SIZE: usize = 10;
+const HISTORY_PREVIEW_LIMIT: usize = 10;
 const TRACK_TITLE_LIMIT: usize = 96;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![shuffle, loop_mode, queue_page]
+    commands![shuffle, loop_mode, queue_page, previous, history]
 }
 
 #[command(description = "Shuffle the queued tracks", guild_only)]
@@ -112,6 +113,52 @@ pub(crate) async fn queue_page(
     Ok(())
 }
 
+#[command(description = "Play the previous track from this guild's history", guild_only)]
+pub(crate) async fn previous(ctx: Context<AppState>) -> Result<()> {
+    let Some((guild_id, channel_id)) = require_voice_channel(&ctx, "control playback").await? else {
+        return Ok(());
+    };
+
+    let message = match playback_action(
+        ctx.data(),
+        guild_id,
+        channel_id,
+        PlaybackAction::Previous,
+    )
+    .await
+    {
+        PlaybackControlResult::Accepted => "Playing the previous track.".to_owned(),
+        PlaybackControlResult::NothingPlaying => "There is no previous track in history.".to_owned(),
+        PlaybackControlResult::NotConnected => "I am not connected to voice here.".to_owned(),
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => format!(
+            "I am connected to <#{}>. Join that channel to control playback.",
+            channel_id.get()
+        ),
+        PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
+            "The voice worker rejected the previous-track request.".to_owned()
+        }
+        PlaybackControlResult::Failed(error) => error,
+    };
+    ctx.reply_ephemeral(message).await?;
+    Ok(())
+}
+
+#[command(description = "Show recent playback history", guild_only)]
+pub(crate) async fn history(ctx: Context<AppState>) -> Result<()> {
+    let Some(guild_id) = ctx.interaction().guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(());
+    };
+
+    let history = {
+        let history = ctx.data().history_manager.read().await;
+        history.snapshot(guild_id)
+    };
+    ctx.reply_ephemeral(render_history(&history)).await?;
+    Ok(())
+}
+
 fn loop_mode_name(mode: LoopMode) -> &'static str {
     match mode {
         LoopMode::Off => "off",
@@ -154,6 +201,18 @@ fn render_queue_page(snapshot: &PlayerSnapshot, page_index: usize) -> String {
         let _ = writeln!(output, "{}. {}", start + offset + 1, format_track(track));
     }
 
+    output.trim_end().to_owned()
+}
+
+fn render_history(history: &[Track]) -> String {
+    if history.is_empty() {
+        return "Playback history is empty.".to_owned();
+    }
+
+    let mut output = String::from("Recent history:\n");
+    for (index, track) in history.iter().rev().take(HISTORY_PREVIEW_LIMIT).enumerate() {
+        let _ = writeln!(output, "{}. {}", index + 1, format_track(track));
+    }
     output.trim_end().to_owned()
 }
 
@@ -211,52 +270,18 @@ fn escape_markdown(value: &str) -> String {
 }
 
 async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option<GuildId>> {
-    let interaction = ctx.interaction();
-    let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
-            .await?;
-        return Ok(None);
-    };
-    let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
-            .await?;
-        return Ok(None);
-    };
-    let channel_id = {
-        let cache = ctx.data().cache.read().await;
-        cache
-            .voice_state(guild_id, user_id)
-            .and_then(|state| state.channel_id)
-    };
-    let Some(channel_id) = channel_id else {
-        ctx.reply_ephemeral("Join my voice channel first to edit the queue.")
-            .await?;
+    let Some((guild_id, channel_id)) = require_voice_channel(ctx, "edit the queue").await? else {
         return Ok(None);
     };
 
-    let (response, result) = oneshot::channel();
-    if ctx
-        .data()
-        .gateway_control
-        .send(GatewayControl::Playback {
-            guild_id,
-            channel_id,
-            action: PlaybackAction::CheckContext,
-            response,
-        })
-        .await
-        .is_err()
+    match playback_action(
+        ctx.data(),
+        guild_id,
+        channel_id,
+        PlaybackAction::CheckContext,
+    )
+    .await
     {
-        ctx.reply_ephemeral("The Gateway control loop is unavailable.")
-            .await?;
-        return Ok(None);
-    }
-
-    match result.await.unwrap_or_else(|_| {
-        PlaybackControlResult::Failed(
-            "The voice worker ended before returning a playback result.".to_owned(),
-        )
-    }) {
         PlaybackControlResult::Accepted => Ok(Some(guild_id)),
         PlaybackControlResult::NotConnected => {
             ctx.reply_ephemeral("I am not connected to voice here.")
@@ -285,6 +310,64 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
     }
 }
 
+async fn require_voice_channel(
+    ctx: &Context<AppState>,
+    purpose: &str,
+) -> Result<Option<(GuildId, ChannelId)>> {
+    let interaction = ctx.interaction();
+    let Some(guild_id) = interaction.guild_id else {
+        ctx.reply_ephemeral("This command can only be used in a server.")
+            .await?;
+        return Ok(None);
+    };
+    let Some(user_id) = invoking_user_id(interaction) else {
+        ctx.reply_ephemeral("I could not determine the invoking user.")
+            .await?;
+        return Ok(None);
+    };
+    let channel_id = {
+        let cache = ctx.data().cache.read().await;
+        cache
+            .voice_state(guild_id, user_id)
+            .and_then(|state| state.channel_id)
+    };
+    let Some(channel_id) = channel_id else {
+        ctx.reply_ephemeral(format!("Join my voice channel first to {purpose}."))
+            .await?;
+        return Ok(None);
+    };
+    Ok(Some((guild_id, channel_id)))
+}
+
+async fn playback_action(
+    data: &AppState,
+    guild_id: GuildId,
+    channel_id: ChannelId,
+    action: PlaybackAction,
+) -> PlaybackControlResult {
+    let (response, result) = oneshot::channel();
+    if data
+        .gateway_control
+        .send(GatewayControl::Playback {
+            guild_id,
+            channel_id,
+            action,
+            response,
+        })
+        .await
+        .is_err()
+    {
+        return PlaybackControlResult::Failed(
+            "The Gateway control loop is unavailable.".to_owned(),
+        );
+    }
+    result.await.unwrap_or_else(|_| {
+        PlaybackControlResult::Failed(
+            "The voice worker ended before returning a playback result.".to_owned(),
+        )
+    })
+}
+
 fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserId> {
     interaction
         .member
@@ -306,7 +389,7 @@ mod tests {
         player::{LoopMode, PlayerSnapshot},
     };
 
-    use super::{loop_mode_name, page_index, render_queue_page};
+    use super::{loop_mode_name, page_index, render_history, render_queue_page};
 
     fn track(id: u64) -> Track {
         Track::from_resolved(
@@ -357,6 +440,14 @@ mod tests {
             render_queue_page(&snapshot, 2),
             "Queue page 3 does not exist. There is 1 page."
         );
+    }
+
+    #[test]
+    fn history_is_rendered_newest_first() {
+        let rendered = render_history(&[track(1), track(2), track(3)]);
+        let third = rendered.find("**track 3**").expect("third track");
+        let first = rendered.find("**track 1**").expect("first track");
+        assert!(third < first);
     }
 
     #[test]
