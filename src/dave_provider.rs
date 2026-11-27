@@ -50,9 +50,9 @@ impl LibDaveProvider {
 
     fn bind_ssrc(&mut self) -> Result<(), DaveProviderError> {
         if self.ssrc.is_none() {
-            let ssrc = self.negotiated_ssrc.get().copied().ok_or_else(|| {
-                DaveProviderError::new("DAVE Opus SSRC not configured")
-            })?;
+            let Some(&ssrc) = self.negotiated_ssrc.get() else {
+                return Err(DaveProviderError::new("DAVE Opus SSRC not configured"));
+            };
             self.manager
                 .encryptor_mut()
                 .assign_ssrc_to_codec(ssrc, Codec::Opus);
