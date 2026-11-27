@@ -1201,9 +1201,7 @@ async fn run_voice_worker(
                         Some(DecoderEvent::Frame(_)) => unreachable!("frame handled above"),
                         None => "decoder exited without a terminal event",
                     };
-                    if !refused
-                        && should_recover(position, duration, playback.recovery_attempts)
-                    {
+                    if !refused && should_recover(position, duration, playback.recovery_attempts) {
                         let attempt = playback.recovery_attempts + 1;
                         warn!(
                             guild_id = guild_id.get(),

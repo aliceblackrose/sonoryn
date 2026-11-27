@@ -79,7 +79,11 @@ impl StrawcoreResolver {
         .map_err(|_| backend_failed("extractor worker failed"))?
     }
 
-    async fn search(&self, query: String, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
+    async fn search(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<ResolvedTrack>, ResolveError> {
         self.run(move || {
             let result = search_extractor::search(&query, SearchFilter::Videos)
                 .map_err(|_| backend_failed("YouTube search failed"))?;
@@ -227,7 +231,11 @@ impl StrawcoreResolver {
             tracing::warn!(status = status.as_u16(), "media access check rejected");
             return Err(ResolveError::MediaHttpStatus(status.as_u16()));
         }
-        tracing::info!(status = status.as_u16(), direct, "media access check succeeded");
+        tracing::info!(
+            status = status.as_u16(),
+            direct,
+            "media access check succeeded"
+        );
         Ok(())
     }
 
@@ -285,9 +293,12 @@ impl TrackResolver for StrawcoreResolver {
     }
 }
 
-
 fn backend_failed(message: &str) -> ResolveError {
-    tracing::warn!(backend = BACKEND, reason = message, "media resolution failed");
+    tracing::warn!(
+        backend = BACKEND,
+        reason = message,
+        "media resolution failed"
+    );
     ResolveError::BackendFailed {
         backend: BACKEND.to_owned(),
         message: message.to_owned(),

@@ -30,10 +30,7 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
     let mut embed = ui::notice("System health", "Runtime dependency check");
     embed.fields = vec![
         ui::field("Gateway", "Online"),
-        ui::field(
-            "Resolver",
-            "Strawcore 0.1 (upstream not probed)",
-        ),
+        ui::field("Resolver", "Strawcore 0.1 (upstream not probed)"),
         ui::field("FFmpeg", ffmpeg),
     ];
     ctx.reply_ephemeral_embed(embed).await?;
