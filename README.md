@@ -139,7 +139,7 @@ A restart cannot preserve live Discord voice transport, encryption, or decoder s
 
 ### DAVE backend migration
 
-Sonoryn tracks Gloamwire's `main` branch and uses its backend-neutral DAVE interface. The application supplies a pinned `libdave-rs` adapter to Discord's native libdave; it requires a C++ toolchain, pkg-config, and OpenSSL 3 development headers. Voice joins require DAVE protocol version 1 or higher and wait for an encryption ratchet before starting playback. The old bundled Davey feature is not used. Existing lockfiles require `cargo update -p gloamwire` to advance the upstream revision.
+Sonoryn pins Gloamwire to the same Git revision as `gloam-commands` and uses its backend-neutral DAVE interface. The application supplies a pinned `libdave-rs` adapter to Discord's native libdave; it requires a C++ toolchain, pkg-config, and OpenSSL 3 development headers. Voice joins require DAVE protocol version 1 or higher and wait for an encryption ratchet before starting playback. The old bundled Davey feature is not used. When upgrading the command framework, update both Git revisions together to preserve a single Gloamwire package identity.
 
 This migration is experimental pending native dependency review, CI, and live Discord voice interoperability testing; do not deploy the draft as a production build.
 

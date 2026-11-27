@@ -61,6 +61,8 @@ async fn main() -> MainResult<()> {
         .commands(command_list())
         .registration(registration)
         .max_concurrent_commands(64)
+        // Leave time for the 2.2-second resolver budget and autocomplete reply.
+        .autocomplete_timeout(std::time::Duration::from_millis(2_500))
         .build()?;
 
     let mut command_tasks = JoinSet::new();
