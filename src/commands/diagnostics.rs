@@ -32,7 +32,7 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
         ui::field("Gateway", "Online"),
         ui::field(
             "Resolver",
-            "RustyPipe 0.11.4 + visitor-data fix (upstream not probed)",
+            "Strawcore 0.1 (upstream not probed)",
         ),
         ui::field("FFmpeg", ffmpeg),
     ];
@@ -89,7 +89,7 @@ pub(crate) async fn help(ctx: Context<AppState>) -> Result<()> {
         "Join a voice channel and use `/play` to search for a song or paste a URL.",
     );
     embed.fields = vec![
-        ui::section("Listen", "`/play` · `/playlist` · `/nowplaying`"),
+        ui::section("Listen", "`/play` · `/nowplaying`"),
         ui::section(
             "Playback",
             "`/pause` · `/resume` · `/skip` · `/previous` · `/stop` · `/seek` · `/volume`",

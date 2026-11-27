@@ -11,11 +11,10 @@ gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands
 gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", branch = "main", features = ["cache", "tracing", "voice"] }
 libdave-rs = { git = "https://github.com/mineygg/libdave-rs", rev = "100c9bca503ee3a5f29ea54db0af76589a42c9ca", default-features = false }
 rand = "0.9"
-# Pin upstream visitor-data panic fix (not yet in the crates.io release).
-rustypipe = { git = "https://github.com/TeamPiped/rustypipe", rev = "71712e4eda5d78516fa9a5a7c3ab85daf1dc0bbc" }
+strawcore-core = { git = "https://git.sulkta.com/Sulkta-OSS/strawcore", rev = "b231c84d9aaf5144dc1fc3d2b7fb2b4ce87b90a2" }
 reqwest = { version = "0.13", default-features = false, features = ["query", "rustls"] }
-# RustyPipe uses reqwest 0.12; its custom builder must use the same version.
-reqwest12 = { package = "reqwest", version = "0.12", default-features = false }
+# Strawcore uses a blocking reqwest 0.12 client on the extraction worker pool.
+reqwest12 = { package = "reqwest", version = "0.12", default-features = false, features = ["blocking", "gzip", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
