@@ -448,10 +448,16 @@ impl VoiceManager {
             .workers
             .get(&guild_id)
             .map(|worker| worker.channel_id)
-            .or_else(|| self.pending.get(&guild_id).map(|pending| pending.channel_id));
+            .or_else(|| {
+                self.pending
+                    .get(&guild_id)
+                    .map(|pending| pending.channel_id)
+            });
         let mut checkpoints = self.checkpoints.write().await;
         let expected = expected.or_else(|| {
-            checkpoints.get(&guild_id).map(|entry| entry.checkpoint.channel_id)
+            checkpoints
+                .get(&guild_id)
+                .map(|entry| entry.checkpoint.channel_id)
         });
         if expected.is_some_and(|expected| expected != channel_id) {
             let _ = response.send(VoiceLeaveResult::Failed(
