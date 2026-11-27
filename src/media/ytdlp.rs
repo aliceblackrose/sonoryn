@@ -13,7 +13,7 @@ use tokio::{
 
 use super::{
     MAX_PLAYLIST_ITEMS, PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track,
-    TrackMetadata, TrackRequest, TrackResolver, TrackSource,
+    TrackMetadata, TrackRequest, TrackResolver, TrackSource, youtube_search,
 };
 
 const DEFAULT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -28,6 +28,7 @@ const STDERR_LIMIT: usize = 2_048;
 pub struct YtDlpResolver {
     binary: PathBuf,
     timeout: Duration,
+    search_client: reqwest::Client,
 }
 
 impl Default for YtDlpResolver {
@@ -35,6 +36,7 @@ impl Default for YtDlpResolver {
         Self {
             binary: PathBuf::from("yt-dlp"),
             timeout: DEFAULT_RESOLVE_TIMEOUT,
+            search_client: reqwest::Client::new(),
         }
     }
 }
@@ -130,6 +132,7 @@ impl YtDlpResolver {
                 "--",
                 request.input(),
             ])
+            .env("PYTHONUNBUFFERED", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -200,7 +203,30 @@ impl TrackResolver for YtDlpResolver {
         limit: usize,
         budget: Duration,
     ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
-        Box::pin(async move { self.search_suggestions(request, limit, budget).await })
+        Box::pin(async move {
+            let Some((_, query)) = request.input().split_once(':') else {
+                return self.search_suggestions(request, limit, budget).await;
+            };
+            if !is_search_target(request.input()) {
+                return self.search_suggestions(request, limit, budget).await;
+            }
+
+            // The HTTP path avoids Python startup and per-video extraction.
+            // Keep yt-dlp available if YouTube changes its public search page.
+            let direct = youtube_search::search(&self.search_client, query, limit, budget);
+            let fallback = self.search_suggestions(request, limit, budget);
+            tokio::pin!(direct, fallback);
+            tokio::select! {
+                result = &mut direct => match result {
+                    Ok(tracks) if !tracks.is_empty() => Ok(tracks),
+                    _ => fallback.await,
+                },
+                result = &mut fallback => match result {
+                    Ok(tracks) if !tracks.is_empty() => Ok(tracks),
+                    _ => direct.await,
+                },
+            }
+        })
     }
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {

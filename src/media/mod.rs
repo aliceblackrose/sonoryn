@@ -1,6 +1,7 @@
 mod decoder;
 mod resolver;
 mod track;
+mod youtube_search;
 mod ytdlp;
 
 pub use decoder::{
