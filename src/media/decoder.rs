@@ -67,6 +67,9 @@ pub enum DecodeError {
 
     #[error("FFmpeg exited unsuccessfully with status {status}")]
     ProcessFailed { status: ExitStatus },
+
+    #[error("media server returned HTTP {0}")]
+    MediaHttpStatus(u16),
 }
 
 /// Per-process FFmpeg controls applied when a decoder stream starts.
@@ -245,13 +248,15 @@ impl FfmpegOpusDecoder {
             source,
         })?;
         let stdout = child.stdout.take().ok_or(DecodeError::MissingStdout)?;
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(drain_decoder_stderr(stderr));
-        }
+        let diagnostics = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_decoder_stderr(stderr)));
 
         Ok(FfmpegOpusStream {
             child,
             packets: OggPacketReader::new(stdout),
+            diagnostics,
             finished: false,
         })
     }
@@ -265,6 +270,7 @@ impl FfmpegOpusDecoder {
 pub struct FfmpegOpusStream {
     child: Child,
     packets: OggPacketReader<ChildStdout>,
+    diagnostics: Option<tokio::task::JoinHandle<Option<u16>>>,
     finished: bool,
 }
 
@@ -285,7 +291,16 @@ impl FfmpegOpusStream {
         }
 
         loop {
-            match self.packets.next_packet().await? {
+            let packet = match self.packets.next_packet().await {
+                Ok(packet) => packet,
+                Err(error) => {
+                    if let Some(status) = self.access_failure().await {
+                        return Err(DecodeError::MediaHttpStatus(status));
+                    }
+                    return Err(error);
+                }
+            };
+            match packet {
                 Some(packet) if packet.starts_with(b"OpusHead") => continue,
                 Some(packet) if packet.starts_with(b"OpusTags") => continue,
                 Some(packet) if packet.is_empty() => {
@@ -305,10 +320,22 @@ impl FfmpegOpusStream {
                     if status.success() {
                         return Ok(None);
                     }
+                    if let Some(code) = self.access_failure().await {
+                        return Err(DecodeError::MediaHttpStatus(code));
+                    }
                     return Err(DecodeError::ProcessFailed { status });
                 }
             }
         }
+    }
+
+    async fn access_failure(&mut self) -> Option<u16> {
+        let task = self.diagnostics.as_mut()?;
+        let result = tokio::time::timeout(Duration::from_millis(500), task)
+            .await
+            .ok()?;
+        self.diagnostics = None;
+        result.ok().flatten()
     }
 
     /// Explicitly stops FFmpeg. Dropping the stream provides the same
@@ -328,29 +355,44 @@ impl FfmpegOpusStream {
 
 // Drain stderr concurrently so FFmpeg never blocks on a full diagnostic pipe.
 // Only fixed categories are logged: FFmpeg can print signed media URLs.
-async fn drain_decoder_stderr(mut stderr: impl AsyncRead + Unpin) {
+async fn drain_decoder_stderr(mut stderr: impl AsyncRead + Unpin) -> Option<u16> {
     let mut buffer = [0_u8; 4096];
     let mut window = Vec::with_capacity(4352);
     let mut saw_output = false;
     let mut reported = false;
+    let mut access_status = None;
     while let Ok(count) = stderr.read(&mut buffer).await {
         if count == 0 {
             break;
         }
         saw_output = true;
-        if !reported {
-            window.extend_from_slice(&buffer[..count]);
-            if let Some(reason) = decoder_stderr_reason(&String::from_utf8_lossy(&window)) {
-                tracing::warn!(reason, "FFmpeg reported an error");
-                reported = true;
-            }
-            if window.len() > 256 {
-                window.drain(..window.len() - 256);
-            }
+        window.extend_from_slice(&buffer[..count]);
+        let output = String::from_utf8_lossy(&window);
+        access_status = access_status.or_else(|| decoder_access_status(&output));
+        if !reported && let Some(reason) = decoder_stderr_reason(&output) {
+            tracing::warn!(reason, "FFmpeg reported an error");
+            reported = true;
+        }
+        if window.len() > 256 {
+            window.drain(..window.len() - 256);
         }
     }
     if saw_output && !reported {
         tracing::warn!("FFmpeg reported an unclassified error (raw output suppressed)");
+    }
+    access_status
+}
+
+fn decoder_access_status(output: &str) -> Option<u16> {
+    let output = output.to_ascii_lowercase();
+    if output.contains("401 unauthorized") || output.contains("http error 401") {
+        Some(401)
+    } else if output.contains("403 forbidden") || output.contains("http error 403") {
+        Some(403)
+    } else if output.contains("429 too many requests") || output.contains("http error 429") {
+        Some(429)
+    } else {
+        None
     }
 }
 
@@ -546,12 +588,14 @@ mod tests {
     use gloamwire::voice::VoiceOpusFrameDuration;
 
     use super::{
-        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, decoder_stderr_reason,
+        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, decoder_access_status, decoder_stderr_reason,
         format_seek_offset, render_http_headers,
     };
 
     #[test]
     fn decoder_diagnostics_do_not_expose_signed_urls() {
+        assert_eq!(decoder_access_status("HTTP error 403 Forbidden"), Some(403));
+        assert_eq!(decoder_access_status("invalid media"), None);
         assert_eq!(
             decoder_stderr_reason("https://example.com/?sig=secret: HTTP error 403 Forbidden"),
             Some("HTTP 403: media request refused")

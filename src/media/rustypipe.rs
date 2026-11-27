@@ -131,17 +131,27 @@ impl RustyPipeResolver {
             ("Origin".to_owned(), "https://www.youtube.com".to_owned()),
             ("Referer".to_owned(), "https://www.youtube.com/".to_owned()),
         ]);
-        if audio_url.is_some() {
-            self.check_media_access(&media).await?;
-        }
+        let direct = audio_url.is_some();
+        tracing::info!(direct, "checking resolved media access");
+        self.check_media_access(&media, direct).await?;
         Ok(media)
     }
 
-    // A single small range request checks the direct stream without buffering it.
-    // Do not follow redirects here or retry explicit access refusals.
-    async fn check_media_access(&self, media: &PlayableMedia) -> Result<(), ResolveError> {
+    // Check the direct stream or manifest without buffering the response.
+    // Follow only bounded HTTPS redirects to the same trusted CDN domain.
+    async fn check_media_access(
+        &self,
+        media: &PlayableMedia,
+        direct: bool,
+    ) -> Result<(), ResolveError> {
         let mut builder = reqwest12::Client::builder()
-            .redirect(reqwest12::redirect::Policy::none())
+            .redirect(reqwest12::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 || !valid_media_url(attempt.url().as_str()) {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
             .timeout(Duration::from_secs(5));
         if self.ipv4_only {
             builder = builder.local_address(IpAddr::from([0, 0, 0, 0]));
@@ -150,7 +160,10 @@ impl RustyPipeResolver {
             backend: BACKEND.to_owned(),
             message: "could not initialize media HTTP client".to_owned(),
         })?;
-        let mut request = client.get(&media.url).header("Range", "bytes=0-0");
+        let mut request = client.get(&media.url);
+        if direct {
+            request = request.header("Range", "bytes=0-0");
+        }
         for (name, value) in &media.http_headers {
             request = request.header(name.as_str(), value.as_str());
         }
@@ -162,10 +175,11 @@ impl RustyPipeResolver {
                 message: "media access check failed".to_owned(),
             })?;
         let status = response.status();
-        if status.is_client_error() || status.is_server_error() {
+        if !status.is_success() {
             tracing::warn!(status = status.as_u16(), "media access check rejected");
             return Err(ResolveError::MediaHttpStatus(status.as_u16()));
         }
+        tracing::info!(status = status.as_u16(), direct, "media access check succeeded");
         Ok(())
     }
 
