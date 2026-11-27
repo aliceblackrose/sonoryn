@@ -695,6 +695,7 @@ impl Drop for ActivePlayback {
 #[derive(Debug, Clone, Copy)]
 enum PlaybackFailure {
     MediaResolution,
+    MediaRefused,
     DecoderStart,
     DecoderRead,
     DecoderStalled,
@@ -1176,10 +1177,17 @@ async fn run_voice_worker(
                 }
 
                 if !completed {
+                    let refused = matches!(
+                        &terminal,
+                        Some(DecoderEvent::Failed(PlaybackFailure::MediaRefused))
+                    );
                     let failure = match terminal {
                         Some(DecoderEvent::Finished) => "premature end of stream",
                         Some(DecoderEvent::Failed(PlaybackFailure::MediaResolution)) => {
                             "media resolution failed"
+                        }
+                        Some(DecoderEvent::Failed(PlaybackFailure::MediaRefused)) => {
+                            "media access refused"
                         }
                         Some(DecoderEvent::Failed(PlaybackFailure::DecoderStart)) => {
                             "decoder start failed"
@@ -1193,7 +1201,9 @@ async fn run_voice_worker(
                         Some(DecoderEvent::Frame(_)) => unreachable!("frame handled above"),
                         None => "decoder exited without a terminal event",
                     };
-                    if should_recover(position, duration, playback.recovery_attempts) {
+                    if !refused
+                        && should_recover(position, duration, playback.recovery_attempts)
+                    {
                         let attempt = playback.recovery_attempts + 1;
                         warn!(
                             guild_id = guild_id.get(),
@@ -1382,10 +1392,17 @@ async fn run_decoder(
 ) {
     let media = match resolver.resolve_media(&track).await {
         Ok(media) => media,
-        Err(_) => {
-            let _ = events
-                .send(DecoderEvent::Failed(PlaybackFailure::MediaResolution))
-                .await;
+        Err(error) => {
+            warn!(%error, "media resolution failed before decoding");
+            let failure = if matches!(
+                error,
+                sonoryn::media::ResolveError::MediaHttpStatus(401 | 403 | 429)
+            ) {
+                PlaybackFailure::MediaRefused
+            } else {
+                PlaybackFailure::MediaResolution
+            };
+            let _ = events.send(DecoderEvent::Failed(failure)).await;
             return;
         }
     };
