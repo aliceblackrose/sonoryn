@@ -1152,8 +1152,7 @@ async fn run_voice_worker(
                 } else {
                     let mut players = players.write().await;
                     let loop_mode = players.loop_mode(guild_id);
-                    if players.complete_current(guild_id, track_id)
-                        && loop_mode != LoopMode::Track
+                    if players.complete_current(guild_id, track_id) && loop_mode != LoopMode::Track
                     {
                         history.write().await.push(guild_id, playback.track.clone());
                     }
