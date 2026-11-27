@@ -55,5 +55,23 @@ pub trait TrackResolver: Send + Sync {
         Box::pin(async move { self.resolve(request).await.map(|track| vec![track]) })
     }
 
+    /// Returns lightweight search suggestions within the interaction's time budget.
+    /// Backends may return partial results rather than waiting for all matches.
+    fn suggest<'a>(
+        &'a self,
+        request: &'a TrackRequest,
+        limit: usize,
+        budget: Duration,
+    ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
+        Box::pin(async move {
+            tokio::time::timeout(budget, self.resolve_playlist(request, limit))
+                .await
+                .map_err(|_| ResolveError::TimedOut {
+                    backend: "track resolver".to_owned(),
+                    timeout: budget,
+                })?
+        })
+    }
+
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia>;
 }

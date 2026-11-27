@@ -1,7 +1,15 @@
-use std::{path::PathBuf, process::Output, time::Duration};
+use std::{
+    path::PathBuf,
+    process::{Output, Stdio},
+    time::Duration,
+};
 
 use serde_json::Value;
-use tokio::{process::Command, time::timeout};
+use tokio::{
+    io::{AsyncBufRead, AsyncBufReadExt, BufReader},
+    process::Command,
+    time::{Instant, timeout, timeout_at},
+};
 
 use super::{
     MAX_PLAYLIST_ITEMS, PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track,
@@ -98,6 +106,43 @@ impl YtDlpResolver {
         parse_playlist_tracks(json, request, limit)
     }
 
+    async fn search_suggestions(
+        &self,
+        request: &TrackRequest,
+        limit: usize,
+        budget: Duration,
+    ) -> Result<Vec<ResolvedTrack>, ResolveError> {
+        let deadline = Instant::now() + budget.min(self.timeout);
+        let limit = limit.clamp(1, MAX_PLAYLIST_ITEMS);
+        let limit_arg = limit.to_string();
+        let backend = self.binary.display().to_string();
+        let mut child = Command::new(&self.binary)
+            .args([
+                "--dump-json",
+                "--no-warnings",
+                "--skip-download",
+                "--flat-playlist",
+                "--lazy-playlist",
+                "--yes-playlist",
+                "--ignore-errors",
+                "--playlist-end",
+                limit_arg.as_str(),
+                "--",
+                request.input(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|source| ResolveError::Spawn {
+                backend: backend.clone(),
+                source,
+            })?;
+        let stdout = child.stdout.take().expect("stdout was piped");
+        // Dropping the child stops unfinished searches after the deadline.
+        collect_search_tracks(BufReader::new(stdout), limit, deadline, &backend).await
+    }
+
     async fn media(&self, track: &Track) -> Result<PlayableMedia, ResolveError> {
         let json = self
             .run_json([
@@ -149,9 +194,47 @@ impl TrackResolver for YtDlpResolver {
         Box::pin(async move { self.playlist(request, limit).await })
     }
 
+    fn suggest<'a>(
+        &'a self,
+        request: &'a TrackRequest,
+        limit: usize,
+        budget: Duration,
+    ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
+        Box::pin(async move { self.search_suggestions(request, limit, budget).await })
+    }
+
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {
         Box::pin(async move { self.media(track).await })
     }
+}
+
+async fn collect_search_tracks(
+    reader: impl AsyncBufRead + Unpin,
+    limit: usize,
+    deadline: Instant,
+    backend: &str,
+) -> Result<Vec<ResolvedTrack>, ResolveError> {
+    let mut lines = reader.lines();
+    let mut tracks = Vec::with_capacity(limit);
+    while tracks.len() < limit {
+        match timeout_at(deadline, lines.next_line()).await {
+            Ok(Ok(Some(line))) => {
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && let Ok(track) = parse_resolved_value(&value, None)
+                {
+                    tracks.push(track);
+                }
+            }
+            Ok(Err(error)) if tracks.is_empty() => {
+                return Err(ResolveError::BackendFailed {
+                    backend: backend.to_owned(),
+                    message: format!("could not read search results: {error}"),
+                });
+            }
+            _ => break,
+        }
+    }
+    Ok(tracks)
 }
 
 fn validate_output(backend: &str, output: Output) -> Result<Value, ResolveError> {
@@ -254,17 +337,18 @@ fn parse_resolved_value(
     fallback_url: Option<&str>,
 ) -> Result<ResolvedTrack, ResolveError> {
     let title = string_field(value, "title")?;
-    let webpage_url = value
-        .get("webpage_url")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("original_url").and_then(Value::as_str))
+    let extractor = ["extractor_key", "extractor", "ie_key"]
+        .into_iter()
+        .find_map(|field| value.get(field).and_then(Value::as_str))
+        .unwrap_or("unknown");
+    let webpage_url = youtube_flat_url(value, extractor)
         .or_else(|| {
-            value
-                .get("url")
-                .and_then(Value::as_str)
-                .filter(|url| is_http_url(url))
+            ["webpage_url", "original_url", "url"]
+                .into_iter()
+                .filter_map(|field| value.get(field).and_then(Value::as_str))
+                .find(|url| is_http_url(url))
+                .map(str::to_owned)
         })
-        .map(str::to_owned)
         .or_else(|| {
             fallback_url
                 .filter(|url| is_http_url(url.trim()))
@@ -288,12 +372,6 @@ fn parse_resolved_value(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| last_thumbnail_url(value));
-    let extractor = value
-        .get("extractor_key")
-        .or_else(|| value.get("extractor"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-
     Ok(ResolvedTrack {
         source: TrackSource::from_extractor(extractor),
         metadata: TrackMetadata {
@@ -305,6 +383,26 @@ fn parse_resolved_value(
         },
         locator: webpage_url,
     })
+}
+
+// Flat YouTube entries can contain a bare video ID instead of a webpage URL.
+fn youtube_flat_url(value: &Value, extractor: &str) -> Option<String> {
+    if !extractor.eq_ignore_ascii_case("youtube")
+        || value.get("_type").and_then(Value::as_str) != Some("url")
+    {
+        return None;
+    }
+
+    ["id", "url"]
+        .into_iter()
+        .filter_map(|field| value.get(field).and_then(Value::as_str))
+        .find(|id| {
+            id.len() == 11
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+        .map(|id| format!("https://www.youtube.com/watch?v={id}"))
 }
 
 fn parse_playable_media(value: Value) -> Result<PlayableMedia, ResolveError> {
@@ -351,8 +449,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_search_target, parse_playable_media, parse_playlist_tracks, parse_resolved_track,
-        resolution_target,
+        collect_search_tracks, is_search_target, parse_playable_media, parse_playlist_tracks,
+        parse_resolved_track, resolution_target,
     };
     use crate::media::{TrackRequest, TrackSource};
 
@@ -404,6 +502,61 @@ mod tests {
             Some(Duration::from_millis(61_500))
         );
         assert_eq!(resolved.locator, "https://www.youtube.com/watch?v=abc");
+    }
+
+    #[test]
+    fn flat_youtube_entries_resolve_bare_video_ids() {
+        let request = TrackRequest::new("ytsearch10:song").expect("request");
+        let tracks = parse_playlist_tracks(
+            json!({
+                "entries": [{
+                    "_type": "url",
+                    "ie_key": "Youtube",
+                    "id": "dQw4w9WgXcQ",
+                    "url": "dQw4w9WgXcQ",
+                    "title": "Song"
+                }]
+            }),
+            &request,
+            10,
+        )
+        .expect("search results");
+
+        assert_eq!(tracks[0].source, TrackSource::YouTube);
+        assert_eq!(
+            tracks[0].locator,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_retains_partial_results_when_backend_stalls() {
+        use tokio::{
+            io::{AsyncWriteExt, BufReader, duplex},
+            time::Instant,
+        };
+
+        let (mut writer, reader) = duplex(1024);
+        writer
+            .write_all(
+                b"invalid json\n{\"title\":\"Song\",\"url\":\"https://example.test/song\"}\n",
+            )
+            .await
+            .expect("write fixture");
+
+        // Keep the writer open so the next line never arrives.
+        let tracks = collect_search_tracks(
+            BufReader::new(reader),
+            10,
+            Instant::now() + Duration::from_millis(50),
+            "fixture",
+        )
+        .await
+        .expect("partial results");
+        drop(writer);
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].metadata.title, "Song");
     }
 
     #[test]
