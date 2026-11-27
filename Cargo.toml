@@ -14,6 +14,8 @@ rand = "0.9"
 # Pin upstream visitor-data panic fix (not yet in the crates.io release).
 rustypipe = { git = "https://github.com/TeamPiped/rustypipe", rev = "71712e4eda5d78516fa9a5a7c3ab85daf1dc0bbc" }
 reqwest = { version = "0.13", default-features = false, features = ["query", "rustls"] }
+# RustyPipe uses reqwest 0.12; its custom builder must use the same version.
+reqwest12 = { package = "reqwest", version = "0.12", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

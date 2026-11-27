@@ -1,5 +1,5 @@
 //! Native YouTube resolution. The queue stores public watch URLs, not CDN URLs.
-use std::{future::Future, time::Duration};
+use std::{future::Future, net::Ipv4Addr, time::Duration};
 
 use rustypipe::{
     client::RustyPipe,
@@ -26,6 +26,14 @@ impl RustyPipeResolver {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Restrict the resolver HTTP client to the local IPv4 address family.
+    pub fn ipv4_only() -> Result<Self, ResolveError> {
+        let client = RustyPipe::builder()
+            .build_with_client(reqwest12::Client::builder().local_address(Ipv4Addr::UNSPECIFIED))
+            .map_err(upstream_error)?;
+        Ok(Self { client })
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
