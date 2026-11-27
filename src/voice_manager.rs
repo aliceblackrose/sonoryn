@@ -874,7 +874,9 @@ async fn run_voice_worker(
                 if let Some(playback) = active.take() {
                     let speaking = playback.speaking;
                     playback.cancel();
-                    if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                    if speaking
+                        && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                    {
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
@@ -932,7 +934,9 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                            if speaking
+                                && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                            {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -971,7 +975,9 @@ async fn run_voice_worker(
                         };
                         let speaking = playback.speaking;
                         playback.cancel();
-                        if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                        if speaking
+                            && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                        {
                             break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                         }
                         let finished = players.write().await.finish_current(guild_id, track_id);
@@ -1009,7 +1015,9 @@ async fn run_voice_worker(
                             let paused = playback.paused;
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                            if speaking
+                                && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                            {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                             active = Some(ActivePlayback::spawn(
@@ -1031,7 +1039,9 @@ async fn run_voice_worker(
                             let paused = playback.paused;
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                            if speaking
+                                && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                            {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                             active = Some(ActivePlayback::spawn(
@@ -1052,7 +1062,9 @@ async fn run_voice_worker(
                         Some(playback) => {
                             playback.paused = true;
                             if playback.speaking {
-                                if let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                                if let Err(error) =
+                                    voice_commands.send(VoiceCommand::FinishSpeaking).await
+                                {
                                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                                 }
                                 playback.speaking = false;
@@ -1075,7 +1087,9 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
+                            if speaking
+                                && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
+                            {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -1107,7 +1121,8 @@ async fn run_voice_worker(
                 if !playback.speaking {
                     if let Err(error) = voice_commands
                         .send(VoiceCommand::SetSpeaking(VoiceSpeakingFlags::MICROPHONE))
-                        .await {
+                        .await
+                    {
                         break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                     }
                     playback.speaking = true;

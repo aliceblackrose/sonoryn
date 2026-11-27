@@ -36,7 +36,7 @@ The remaining roadmap work is reliability, richer controls, persistence, shardin
 - Sonoryn owns its Gateway loop instead of using `Framework::run()`, because music requires `GUILD_VOICE_STATES` and outbound voice-state updates.
 - Per-guild playback runs as an actor/task with explicit commands rather than shared mutable playback state scattered across command handlers.
 - Source resolution, decoding, DAVE media protection, RTP transport, and queue policy remain separate layers.
-- No bespoke cryptography in Sonoryn. DAVE belongs in Gloamwire behind a dedicated implementation boundary.
+- No bespoke cryptography in Sonoryn. The application-owned adapter delegates MLS and media cryptography to native libdave; Gloamwire owns voice framing and transport.
 - Direct/signed media URLs are ephemeral and never stored in queue state.
 
 ## Prototype data flow

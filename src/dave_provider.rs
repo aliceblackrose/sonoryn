@@ -25,9 +25,8 @@ pub(crate) struct LibDaveProvider {
 
 impl LibDaveProvider {
     pub(crate) fn new(user_id: UserId, channel_id: ChannelId) -> Result<Self, DaveProviderError> {
-        let manager =
-            SessionManager::new(user_id.get().to_string(), channel_id.get(), None)
-                .map_err(backend_error)?;
+        let manager = SessionManager::new(user_id.get().to_string(), channel_id.get(), None)
+            .map_err(backend_error)?;
         Ok(Self {
             manager,
             ssrc: None,
@@ -283,7 +282,9 @@ mod tests {
         let mut provider = LibDaveProvider::new(UserId::new(10), ChannelId::new(20)).unwrap();
         provider.set_ssrc(123);
         let commands = provider.configure_protocol_version(1).unwrap();
-        assert!(matches!(&commands[..], [DaveGatewayCommand::KeyPackage(bytes)] if !bytes.is_empty()));
+        assert!(
+            matches!(&commands[..], [DaveGatewayCommand::KeyPackage(bytes)] if !bytes.is_empty())
+        );
         assert_eq!(provider.active_protocol_version(), 1);
         assert!(!provider.is_ready());
     }
