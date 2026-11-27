@@ -132,7 +132,9 @@ impl VoiceManager {
                 players,
                 history,
                 resolver,
-                decoder: FfmpegOpusDecoder::new(),
+                decoder: FfmpegOpusDecoder::new().with_ipv4_only(
+                    std::env::var("SONORYN_RESOLVER_IPV4_ONLY").as_deref() == Ok("1"),
+                ),
                 checkpoints,
                 next_id: 0,
             },
