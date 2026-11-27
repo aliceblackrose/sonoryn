@@ -127,12 +127,14 @@ impl FfmpegDecodeOptions {
 #[derive(Debug, Clone)]
 pub struct FfmpegOpusDecoder {
     binary: PathBuf,
+    ipv4_only: bool,
 }
 
 impl Default for FfmpegOpusDecoder {
     fn default() -> Self {
         Self {
             binary: PathBuf::from("ffmpeg"),
+            ipv4_only: false,
         }
     }
 }
@@ -146,6 +148,13 @@ impl FfmpegOpusDecoder {
     #[must_use]
     pub fn with_binary(mut self, binary: impl Into<PathBuf>) -> Self {
         self.binary = binary.into();
+        self
+    }
+
+    /// Restrict HTTP input connections to IPv4 without changing host networking.
+    #[must_use]
+    pub const fn with_ipv4_only(mut self, ipv4_only: bool) -> Self {
+        self.ipv4_only = ipv4_only;
         self
     }
 
@@ -178,6 +187,9 @@ impl FfmpegOpusDecoder {
         // Reconnect transient HTTP failures, but never reconnect on a clean EOF.
         // The voice worker refreshes signed URLs and seeks on premature EOF.
         if media.url.starts_with("https://") || media.url.starts_with("http://") {
+            if self.ipv4_only {
+                command.arg("-local_addr").arg("0.0.0.0");
+            }
             command
                 .arg("-protocol_whitelist")
                 .arg("http,https,tcp,tls,crypto,httpproxy")
