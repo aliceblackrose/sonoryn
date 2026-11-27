@@ -3,7 +3,10 @@
 //! libdave owns MLS and media cryptography; this module only translates typed
 //! gateway events, maintains transition state and refuses unencrypted media.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use gloamwire::{
     model::{ChannelId, UserId},
@@ -16,6 +19,7 @@ use libdave_rs::{Codec, MediaType, SessionManager, max_supported_protocol_versio
 
 pub(crate) struct LibDaveProvider {
     manager: SessionManager,
+    negotiated_ssrc: Arc<OnceLock<u32>>,
     ssrc: Option<u32>,
     active_version: u16,
     epoch_version: u16,
@@ -29,6 +33,7 @@ impl LibDaveProvider {
             .map_err(backend_error)?;
         Ok(Self {
             manager,
+            negotiated_ssrc: Arc::new(OnceLock::new()),
             ssrc: None,
             active_version: 0,
             epoch_version: 0,
@@ -37,11 +42,23 @@ impl LibDaveProvider {
         })
     }
 
-    pub(crate) fn set_ssrc(&mut self, ssrc: u32) {
-        self.manager
-            .encryptor_mut()
-            .assign_ssrc_to_codec(ssrc, Codec::Opus);
-        self.ssrc = Some(ssrc);
+    /// Shares the write-once transport SSRC with the worker before the
+    /// provider is moved into Gloamwire's managed session.
+    pub(crate) fn ssrc_handle(&self) -> Arc<OnceLock<u32>> {
+        Arc::clone(&self.negotiated_ssrc)
+    }
+
+    fn bind_ssrc(&mut self) -> Result<(), DaveProviderError> {
+        if self.ssrc.is_none() {
+            let ssrc = self.negotiated_ssrc.get().copied().ok_or_else(|| {
+                DaveProviderError::new("DAVE Opus SSRC not configured")
+            })?;
+            self.manager
+                .encryptor_mut()
+                .assign_ssrc_to_codec(ssrc, Codec::Opus);
+            self.ssrc = Some(ssrc);
+        }
+        Ok(())
     }
 
     fn validate_version(version: u16) -> Result<(), DaveProviderError> {
@@ -136,6 +153,9 @@ impl DaveProvider for LibDaveProvider {
         event: &DaveProtocolEvent,
         _participants: &DaveParticipantSet,
     ) -> Result<Vec<DaveGatewayCommand>, DaveProviderError> {
+        // The worker publishes the negotiated SSRC before polling DAVE
+        // events. Bind it before any transition can establish readiness.
+        self.bind_ssrc()?;
         match event {
             DaveProtocolEvent::ClientsConnect { user_ids } => {
                 for user_id in user_ids {
@@ -287,12 +307,32 @@ mod tests {
     #[test]
     fn negotiates_dave_and_generates_key_package() {
         let mut provider = LibDaveProvider::new(UserId::new(10), ChannelId::new(20)).unwrap();
-        provider.set_ssrc(123);
         let commands = provider.configure_protocol_version(1).unwrap();
         assert!(
             matches!(&commands[..], [DaveGatewayCommand::KeyPackage(bytes)] if !bytes.is_empty())
         );
         assert_eq!(provider.active_protocol_version(), 1);
+        assert!(!provider.is_ready());
+    }
+
+    #[test]
+    fn binds_negotiated_ssrc_before_processing_dave_events() {
+        let mut provider = LibDaveProvider::new(UserId::new(10), ChannelId::new(20)).unwrap();
+        let ssrc = provider.ssrc_handle();
+        provider.configure_protocol_version(1).unwrap();
+        let event = DaveProtocolEvent::ClientsConnect {
+            user_ids: Vec::new(),
+        };
+        let participants = DaveParticipantSet::default();
+
+        assert!(provider.handle_gateway_event(&event, &participants).is_err());
+        assert_eq!(provider.ssrc, None);
+        assert!(!provider.is_ready());
+
+        ssrc.set(123).unwrap();
+        provider.handle_gateway_event(&event, &participants).unwrap();
+        assert_eq!(provider.ssrc, Some(123));
+        assert!(ssrc.set(456).is_err());
         assert!(!provider.is_ready());
     }
 }

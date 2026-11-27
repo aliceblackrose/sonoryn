@@ -726,10 +726,13 @@ async fn run_voice_worker(
     let connect = async {
         let provider = LibDaveProvider::new(info.user_id, channel_id)
             .map_err(|error| VoiceError::Protocol(error.to_string()))?;
+        let ssrc_handle = provider.ssrc_handle();
         let config = VoiceGatewayConfig::new(info).with_min_dave_protocol_version(1);
         let mut session = DaveVoiceSession::connect(config, provider).await?;
         let ssrc = session.session().gateway().ready().ssrc;
-        session.provider_mut().set_ssrc(ssrc);
+        ssrc_handle
+            .set(ssrc)
+            .map_err(|_| VoiceError::Protocol("DAVE Opus SSRC already configured".into()))?;
 
         // Transport negotiation alone does not establish an MLS media ratchet.
         // Do not advertise readiness or start decoding until DAVE is usable.
