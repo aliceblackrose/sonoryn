@@ -11,8 +11,9 @@ use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
     model::{ChannelId, GuildId, UserId},
     voice::{
-        DaveVoiceSession, DaveyProvider, VoiceConnectionInfo, VoiceFramePacer, VoiceGatewayEvent,
-        VoiceRendezvous, VoiceRendezvousStatus, VoiceResult, VoiceSpeakingFlags,
+        DaveProviderLifecycle, DaveVoiceSession, VoiceCommand, VoiceConnectionInfo, VoiceDriver,
+        VoiceError, VoiceFramePacer, VoiceGatewayConfig, VoiceGatewayEvent, VoiceRendezvous,
+        VoiceRendezvousStatus, VoiceResult, VoiceSpeakingFlags,
     },
 };
 use sonoryn::{
@@ -27,6 +28,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
+    dave_provider::LibDaveProvider,
     gateway_control::{
         GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult, VoiceLeaveResult,
     },
@@ -721,7 +723,21 @@ async fn run_voice_worker(
         resume,
         ready,
     } = services;
-    let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
+    let connect = async {
+        let provider = LibDaveProvider::new(info.user_id, channel_id)
+            .map_err(|error| VoiceError::Protocol(error.to_string()))?;
+        let config = VoiceGatewayConfig::new(info).with_min_dave_protocol_version(1);
+        let mut session = DaveVoiceSession::connect(config, provider).await?;
+        let ssrc = session.session().gateway().ready().ssrc;
+        session.provider_mut().set_ssrc(ssrc);
+
+        // Transport negotiation alone does not establish an MLS media ratchet.
+        // Do not advertise readiness or start decoding until DAVE is usable.
+        while !session.provider().is_ready() {
+            session.next_event().await?;
+        }
+        Ok::<_, VoiceError>(VoiceDriver::spawn(session))
+    };
     tokio::pin!(connect);
 
     let mut session = tokio::select! {
@@ -772,6 +788,9 @@ async fn run_voice_worker(
         }
     };
 
+    // Sonoryn is send-only. Drop the best-effort inbound audio queue.
+    drop(session.take_audio_receiver());
+    let voice_commands = session.commands();
     ready.store(true, Ordering::Release);
     let _ = response.send(VoiceJoinResult::Joined { channel_id });
     info!(
@@ -816,7 +835,9 @@ async fn run_voice_worker(
         let input = if decoder_enabled {
             tokio::select! {
                 command = commands.recv() => VoiceWorkerInput::Command(command),
-                event = session.next_event() => VoiceWorkerInput::Voice(event),
+                event = session.next_event() => VoiceWorkerInput::Voice(event.unwrap_or_else(|| {
+                    Err(VoiceError::Protocol("voice driver stopped".into()))
+                })),
                 decoder_event = recv_decoder_event(&mut active) => {
                     VoiceWorkerInput::Decoder(decoder_event)
                 }
@@ -825,7 +846,9 @@ async fn run_voice_worker(
         } else {
             tokio::select! {
                 command = commands.recv() => VoiceWorkerInput::Command(command),
-                event = session.next_event() => VoiceWorkerInput::Voice(event),
+                event = session.next_event() => VoiceWorkerInput::Voice(event.unwrap_or_else(|| {
+                    Err(VoiceError::Protocol("voice driver stopped".into()))
+                })),
                 _ = sleep_until(deadline), if idle => VoiceWorkerInput::IdleTimeout,
             }
         };
@@ -851,7 +874,7 @@ async fn run_voice_worker(
                 if let Some(playback) = active.take() {
                     let speaking = playback.speaking;
                     playback.cancel();
-                    if speaking && let Err(error) = session.finish_speaking().await {
+                    if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                         warn!(
                             guild_id = guild_id.get(),
                             error = %error,
@@ -909,7 +932,7 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = session.finish_speaking().await {
+                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -948,7 +971,7 @@ async fn run_voice_worker(
                         };
                         let speaking = playback.speaking;
                         playback.cancel();
-                        if speaking && let Err(error) = session.finish_speaking().await {
+                        if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                             break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                         }
                         let finished = players.write().await.finish_current(guild_id, track_id);
@@ -986,7 +1009,7 @@ async fn run_voice_worker(
                             let paused = playback.paused;
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = session.finish_speaking().await {
+                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                             active = Some(ActivePlayback::spawn(
@@ -1008,7 +1031,7 @@ async fn run_voice_worker(
                             let paused = playback.paused;
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = session.finish_speaking().await {
+                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                             active = Some(ActivePlayback::spawn(
@@ -1029,7 +1052,7 @@ async fn run_voice_worker(
                         Some(playback) => {
                             playback.paused = true;
                             if playback.speaking {
-                                if let Err(error) = session.finish_speaking().await {
+                                if let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                                 }
                                 playback.speaking = false;
@@ -1052,7 +1075,7 @@ async fn run_voice_worker(
                         if let Some(playback) = active.take() {
                             let speaking = playback.speaking;
                             playback.cancel();
-                            if speaking && let Err(error) = session.finish_speaking().await {
+                            if speaking && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await {
                                 break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                             }
                         }
@@ -1082,7 +1105,9 @@ async fn run_voice_worker(
                     continue;
                 };
                 if !playback.speaking {
-                    if let Err(error) = session.set_speaking(VoiceSpeakingFlags::MICROPHONE).await {
+                    if let Err(error) = voice_commands
+                        .send(VoiceCommand::SetSpeaking(VoiceSpeakingFlags::MICROPHONE))
+                        .await {
                         break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                     }
                     playback.speaking = true;
@@ -1094,7 +1119,13 @@ async fn run_voice_worker(
                         break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                     }
                 };
-                if let Err(error) = session.send_opus_frame(frame).await {
+                if let Err(error) = voice_commands
+                    .send(VoiceCommand::SendOpus {
+                        payload: frame.payload().to_vec(),
+                        duration: frame.duration(),
+                    })
+                    .await
+                {
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 playback.position = playback.position.saturating_add(OPUS_FRAME_DURATION);
@@ -1112,7 +1143,7 @@ async fn run_voice_worker(
                     && !ended_early(position, duration);
 
                 if playback.speaking
-                    && let Err(error) = session.finish_speaking().await
+                    && let Err(error) = voice_commands.send(VoiceCommand::FinishSpeaking).await
                 {
                     // Retain the last transmitted offset on transport failure.
                     active = Some(playback);

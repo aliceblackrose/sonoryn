@@ -48,7 +48,7 @@ if (( ! SKIP_DEPS )); then
     fi
 fi
 
-for tool in git curl cc ffmpeg yt-dlp install; do
+for tool in git curl cc c++ pkg-config ffmpeg yt-dlp install; do
     has "$tool" || die "Missing dependency: $tool"
 done
 
