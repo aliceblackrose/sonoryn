@@ -325,12 +325,15 @@ mod tests {
         };
         let participants = DaveParticipantSet::default();
 
-        assert!(provider.handle_gateway_event(&event, &participants).is_err());
+        let result = provider.handle_gateway_event(&event, &participants);
+        assert!(result.is_err());
         assert_eq!(provider.ssrc, None);
         assert!(!provider.is_ready());
 
         ssrc.set(123).unwrap();
-        provider.handle_gateway_event(&event, &participants).unwrap();
+        provider
+            .handle_gateway_event(&event, &participants)
+            .unwrap();
         assert_eq!(provider.ssrc, Some(123));
         assert!(ssrc.set(456).is_err());
         assert!(!provider.is_ready());
