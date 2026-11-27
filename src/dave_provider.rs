@@ -56,7 +56,9 @@ impl LibDaveProvider {
     fn key_package(&self) -> Result<Vec<DaveGatewayCommand>, DaveProviderError> {
         let package = self.manager.marshalled_key_package();
         if package.is_empty() {
-            return Err(DaveProviderError::new("libdave produced no MLS key package"));
+            return Err(DaveProviderError::new(
+                "libdave produced no MLS key package",
+            ));
         }
         Ok(vec![DaveGatewayCommand::KeyPackage(package)])
     }
@@ -87,11 +89,15 @@ impl LibDaveProvider {
             return Ok(Vec::new());
         }
         if !acknowledge {
-            return Err(DaveProviderError::new("libdave did not prepare DAVE transition"));
+            return Err(DaveProviderError::new(
+                "libdave did not prepare DAVE transition",
+            ));
         }
         self.pending.insert(transition_id, version);
         // Keep the previous active ratchet only until the gateway executes the transition.
-        Ok(vec![DaveGatewayCommand::ReadyForTransition { transition_id }])
+        Ok(vec![DaveGatewayCommand::ReadyForTransition {
+            transition_id,
+        }])
     }
 }
 
@@ -159,9 +165,10 @@ impl DaveProvider for LibDaveProvider {
                 );
             }
             DaveProtocolEvent::ExecuteTransition { transition_id } => {
-                let version = self.pending.remove(transition_id).ok_or_else(|| {
-                    DaveProviderError::new("unprepared DAVE execute transition")
-                })?;
+                let version = self
+                    .pending
+                    .remove(transition_id)
+                    .ok_or_else(|| DaveProviderError::new("unprepared DAVE execute transition"))?;
                 self.manager
                     .on_execute_transition(*transition_id)
                     .map_err(backend_error)?;
@@ -202,10 +209,10 @@ impl DaveProvider for LibDaveProvider {
                 let mut wire = Vec::with_capacity(payload.len() + 1);
                 wire.push(operation);
                 wire.extend_from_slice(payload);
-                if let Some(commit_welcome) = self.manager.on_mls_proposals(&wire) {
-                    if !commit_welcome.is_empty() {
-                        return Ok(vec![DaveGatewayCommand::CommitWelcome(commit_welcome)]);
-                    }
+                if let Some(commit_welcome) = self.manager.on_mls_proposals(&wire)
+                    && !commit_welcome.is_empty()
+                {
+                    return Ok(vec![DaveGatewayCommand::CommitWelcome(commit_welcome)]);
                 }
             }
             DaveProtocolEvent::AnnounceCommit {
