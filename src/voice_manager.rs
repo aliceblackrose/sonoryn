@@ -40,6 +40,7 @@ const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
 const OPUS_FRAME_DURATION: Duration = Duration::from_millis(20);
+const MAX_DECODER_RECOVERY_ATTEMPTS: u8 = 2;
 
 struct PendingJoin {
     request_id: u64,
@@ -638,6 +639,7 @@ struct ActivePlayback {
     pacer: VoiceFramePacer,
     paused: bool,
     speaking: bool,
+    recovery_attempts: u8,
 }
 
 impl ActivePlayback {
@@ -668,6 +670,7 @@ impl ActivePlayback {
             pacer: VoiceFramePacer::default(),
             paused,
             speaking: false,
+            recovery_attempts: 0,
         }
     }
 
@@ -1080,66 +1083,80 @@ async fn run_voice_worker(
                 }
                 playback.position = playback.position.saturating_add(OPUS_FRAME_DURATION);
             }
-            VoiceWorkerInput::Decoder(Some(DecoderEvent::Finished)) => {
+            VoiceWorkerInput::Decoder(terminal) => {
                 let Some(playback) = active.take() else {
                     continue;
                 };
                 let track_id = playback.track_id;
-                let (current, loop_mode) = {
-                    let players = players.read().await;
-                    (
-                        players.snapshot(guild_id).now_playing,
-                        players.loop_mode(guild_id),
-                    )
-                };
-                let speaking = playback.speaking;
-                if speaking && let Err(error) = session.finish_speaking().await {
-                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
-                }
-                let completed = players.write().await.complete_current(guild_id, track_id);
-                if completed
-                    && loop_mode != LoopMode::Track
-                    && let Some(track) = current
+                let duration = playback.track.metadata.duration;
+                let position = playback.position;
+                let completed = matches!(&terminal, Some(DecoderEvent::Finished))
+                    && !ended_early(position, duration);
+
+                if playback.speaking
+                    && let Err(error) = session.finish_speaking().await
                 {
-                    history.write().await.push(guild_id, track);
-                }
-                active =
-                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
-                        .await;
-            }
-            VoiceWorkerInput::Decoder(Some(DecoderEvent::Failed(failure))) => {
-                let Some(playback) = active.take() else {
-                    continue;
-                };
-                let track_id = playback.track_id;
-                let speaking = playback.speaking;
-                warn!(
-                    guild_id = guild_id.get(),
-                    failure = ?failure,
-                    "track playback failed; advancing queue"
-                );
-                if speaking && let Err(error) = session.finish_speaking().await {
+                    // Retain the last transmitted offset on transport failure.
+                    active = Some(playback);
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
-                players.write().await.finish_current(guild_id, track_id);
-                active =
-                    start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
-                        .await;
-            }
-            VoiceWorkerInput::Decoder(None) => {
-                let Some(playback) = active.take() else {
-                    continue;
-                };
-                let track_id = playback.track_id;
-                let speaking = playback.speaking;
-                warn!(
-                    guild_id = guild_id.get(),
-                    "decoder task ended without a terminal event; advancing queue"
-                );
-                if speaking && let Err(error) = session.finish_speaking().await {
-                    break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+
+                if !completed {
+                    let failure = match terminal {
+                        Some(DecoderEvent::Finished) => "premature end of stream",
+                        Some(DecoderEvent::Failed(PlaybackFailure::MediaResolution)) => {
+                            "media resolution failed"
+                        }
+                        Some(DecoderEvent::Failed(PlaybackFailure::DecoderStart)) => {
+                            "decoder start failed"
+                        }
+                        Some(DecoderEvent::Failed(PlaybackFailure::DecoderRead)) => {
+                            "decoder read failed"
+                        }
+                        Some(DecoderEvent::Frame(_)) => unreachable!("frame handled above"),
+                        None => "decoder exited without a terminal event",
+                    };
+                    if should_recover(position, duration, playback.recovery_attempts) {
+                        let attempt = playback.recovery_attempts + 1;
+                        warn!(
+                            guild_id = guild_id.get(),
+                            track_id = track_id.get(),
+                            position_ms = position.as_millis() as u64,
+                            expected_ms = ?duration.map(|value| value.as_millis()),
+                            attempt,
+                            failure,
+                            "recovering interrupted playback from last transmitted position"
+                        );
+                        let mut resumed = ActivePlayback::spawn(
+                            playback.track.clone(),
+                            resolver.clone(),
+                            decoder.clone(),
+                            position,
+                            volume_percent,
+                            false,
+                        );
+                        resumed.recovery_attempts = attempt;
+                        active = Some(resumed);
+                        continue;
+                    }
+
+                    warn!(
+                        guild_id = guild_id.get(),
+                        track_id = track_id.get(),
+                        position_ms = position.as_millis() as u64,
+                        expected_ms = ?duration.map(|value| value.as_millis()),
+                        failure,
+                        "incomplete track; advancing without applying repeat mode"
+                    );
+                    players.write().await.finish_current(guild_id, track_id);
+                } else {
+                    let mut players = players.write().await;
+                    let loop_mode = players.loop_mode(guild_id);
+                    if players.complete_current(guild_id, track_id) && loop_mode != LoopMode::Track
+                    {
+                        history.write().await.push(guild_id, playback.track.clone());
+                    }
                 }
-                players.write().await.finish_current(guild_id, track_id);
                 active =
                     start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent)
                         .await;
@@ -1214,6 +1231,26 @@ async fn run_voice_worker(
     }
 
     send_stopped(&worker_events, guild_id, generation, reason).await;
+}
+
+// Metadata may differ slightly from decoded audio (encoder padding, etc.).
+// A significant shortfall is not a successful track completion.
+fn ended_early(position: Duration, expected: Option<Duration>) -> bool {
+    if position.is_zero() {
+        return true;
+    }
+    expected.is_some_and(|duration| {
+        let tolerance = (duration / 20)
+            .max(Duration::from_secs(1))
+            .min(Duration::from_secs(5));
+        duration.saturating_sub(position) > tolerance
+    })
+}
+
+fn should_recover(position: Duration, expected: Option<Duration>, attempts: u8) -> bool {
+    attempts < MAX_DECODER_RECOVERY_ATTEMPTS
+        && expected.is_some_and(|duration| position < duration)
+        && ended_early(position, expected)
 }
 
 async fn update_checkpoint(
@@ -1336,5 +1373,36 @@ async fn disconnect_gateway_voice(gateway: &mut GatewayConnection, guild_id: Gui
             error = %error,
             "failed to clear main-Gateway voice state"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{MAX_DECODER_RECOVERY_ATTEMPTS, ended_early, should_recover};
+
+    #[test]
+    fn half_track_is_not_a_successful_completion() {
+        let length = Some(Duration::from_secs(240));
+        let halfway = Duration::from_secs(120);
+        assert!(ended_early(halfway, length));
+        assert!(should_recover(halfway, length, 0));
+        assert!(!should_recover(
+            halfway,
+            length,
+            MAX_DECODER_RECOVERY_ATTEMPTS
+        ));
+    }
+
+    #[test]
+    fn near_end_and_unknown_duration_are_not_premature_eof() {
+        assert!(!ended_early(
+            Duration::from_secs(238),
+            Some(Duration::from_secs(240))
+        ));
+        assert!(!ended_early(Duration::from_secs(30), None));
+        assert!(ended_early(Duration::ZERO, None));
+        assert!(!should_recover(Duration::from_secs(30), None, 0));
     }
 }
