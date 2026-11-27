@@ -160,7 +160,10 @@ mod tests {
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         );
         assert_eq!(tracks[1].metadata.title, "Another song");
-        assert_eq!(parse_search_page(&html, 1).expect("limited results").len(), 1);
+        assert_eq!(
+            parse_search_page(&html, 1).expect("limited results").len(),
+            1
+        );
     }
 
     #[test]

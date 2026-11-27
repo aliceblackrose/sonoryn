@@ -364,7 +364,9 @@ mod tests {
 
     use sonoryn::media::{ResolvedTrack, TrackMetadata, TrackSource};
 
-    use super::{AUTOCOMPLETE_LIMIT, autocomplete_choice, autocomplete_choices, autocomplete_request};
+    use super::{
+        AUTOCOMPLETE_LIMIT, autocomplete_choice, autocomplete_choices, autocomplete_request,
+    };
 
     #[test]
     fn autocomplete_never_echoes_the_query_as_a_fake_result() {
