@@ -32,7 +32,7 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
         ui::field("Gateway", "Online"),
         ui::field(
             "Resolver",
-            "RustyPipe 0.11.4 (built in; upstream not probed)",
+            "RustyPipe 0.11.4 + visitor-data fix (upstream not probed)",
         ),
         ui::field("FFmpeg", ffmpeg),
     ];

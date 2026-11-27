@@ -3,6 +3,7 @@ use std::{future::Future, time::Duration};
 
 use rustypipe::{
     client::RustyPipe,
+    error::{Error as RustyPipeError, ExtractionError},
     model::{Thumbnail, VideoItem},
 };
 use tokio::time::timeout;
@@ -169,10 +170,24 @@ impl TrackResolver for RustyPipeResolver {
 
 // Avoid including signed URLs, request bodies or upstream credentials in
 // user-visible errors or logs.
-fn upstream_error<E>(_: E) -> ResolveError {
+fn upstream_error(error: RustyPipeError) -> ResolveError {
+    let message = match error {
+        RustyPipeError::Extraction(ExtractionError::InvalidData(message))
+            if message.contains("visitor data") =>
+        {
+            "YouTube did not provide visitor session data; playback is unavailable"
+        }
+        RustyPipeError::Extraction(ExtractionError::Unavailable { .. }) => {
+            "YouTube reports that this content is unavailable"
+        }
+        RustyPipeError::HttpStatus(429, _) => "YouTube is rate limiting requests",
+        RustyPipeError::HttpStatus(403, _) => "YouTube refused the request",
+        _ => "YouTube request failed",
+    };
+    tracing::warn!(backend = BACKEND, reason = message, "media resolution failed");
     ResolveError::BackendFailed {
         backend: BACKEND.to_owned(),
-        message: "YouTube request failed".to_owned(),
+        message: message.to_owned(),
     }
 }
 
@@ -312,6 +327,18 @@ fn valid_media_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visitor_data_error_is_recoverable() {
+        let error = upstream_error(RustyPipeError::Extraction(ExtractionError::InvalidData(
+            "Could not find visitor data on html page".into(),
+        )));
+        assert!(matches!(
+            error,
+            ResolveError::BackendFailed { message, .. }
+                if message.contains("visitor session data")
+        ));
+    }
 
     #[test]
     fn parses_search_and_video_targets() {
