@@ -2,12 +2,12 @@ use std::{collections::HashSet, time::Duration};
 
 use gloam_commands::prelude::*;
 use gloamwire::model::{
-    ApplicationCommandInteractionValue, ChannelId, GuildId, Interaction, UserId,
+    ApplicationCommandInteractionValue, ChannelId, Embed, GuildId, Interaction, UserId,
 };
 use sonoryn::media::{RequestedBy, ResolvedTrack, TrackRequest};
 use tokio::sync::oneshot;
 
-use super::ui::{self, ReplyUi};
+use super::{panel, ui};
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
@@ -66,52 +66,45 @@ pub(crate) async fn play(
     #[max_length = 200]
     query: String,
 ) -> Result<()> {
-    let interaction = ctx.interaction();
+    ctx.defer_ephemeral().await?;
+    let embed = enqueue_card(ctx.data(), ctx.interaction(), query).await;
+    panel::reply_card(&ctx, embed, panel::launch_buttons()).await
+}
+
+/// Shared by slash commands and the track-entry modal.
+pub(super) async fn enqueue_card(
+    state: &AppState,
+    interaction: &Interaction,
+    query: String,
+) -> Embed {
+    let notice = |message: String| ui::notice("Add track", message);
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_status("This command can only be used in a server.")
-            .await?;
-        return Ok(());
+        return notice("This action can only be used in a server.".to_owned());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_status("I could not determine the invoking user.")
-            .await?;
-        return Ok(());
+        return notice("I could not determine the invoking user.".to_owned());
     };
-    if current_voice_channel(ctx.data(), guild_id, user_id)
+    if current_voice_channel(state, guild_id, user_id)
         .await
         .is_none()
     {
-        ctx.reply_status("Join a voice channel first, then run `/play`.")
-            .await?;
-        return Ok(());
+        return notice("Join a voice channel first, then add a track.".to_owned());
     }
-
     let request = match TrackRequest::new(query) {
         Ok(request) => request,
-        Err(message) => {
-            ctx.reply_status(message).await?;
-            return Ok(());
-        }
+        Err(message) => return notice(message.to_owned()),
     };
-
-    ctx.defer_ephemeral().await?;
-    let resolved = match ctx.data().resolver.resolve(&request).await {
+    let resolved = match state.resolver.resolve(&request).await {
         Ok(resolved) => resolved,
         Err(error) => {
             let message = escape_markdown(&truncate_chars(&error.to_string(), ERROR_MESSAGE_LIMIT));
-            ctx.reply_status(format!("I could not resolve that track: {message}"))
-                .await?;
-            return Ok(());
+            return notice(format!("I could not resolve that track: {message}"));
         }
     };
-
-    let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_status("You left voice while I was resolving that track.")
-            .await?;
-        return Ok(());
+    let Some(channel_id) = current_voice_channel(state, guild_id, user_id).await else {
+        return notice("You left voice while I was resolving that track.".to_owned());
     };
-
-    match ensure_voice(ctx.data(), guild_id, channel_id).await {
+    match ensure_voice(state, guild_id, channel_id).await {
         VoiceJoinResult::Joined { .. } => {}
         VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
@@ -119,86 +112,52 @@ pub(crate) async fn play(
         VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
         } => {
-            ctx.reply_status(format!(
+            return notice(format!(
                 "I am already connected to <#{}>. Join that channel to control playback.",
                 connected.get()
-            ))
-            .await?;
-            return Ok(());
+            ));
         }
         VoiceJoinResult::InProgress { channel_id } => {
-            ctx.reply_status(format!(
-                "A voice join for <#{}> is already in progress. Try `/play` again once it connects.",
+            return notice(format!(
+                "A voice join for <#{}> is already in progress. Try again once it connects.",
                 channel_id.get()
-            ))
-            .await?;
-            return Ok(());
+            ));
         }
-        VoiceJoinResult::Cancelled => {
-            ctx.reply_status("The voice join was cancelled.").await?;
-            return Ok(());
-        }
-        VoiceJoinResult::Failed(error) => {
-            ctx.reply_status(error).await?;
-            return Ok(());
-        }
+        VoiceJoinResult::Cancelled => return notice("The voice join was cancelled.".to_owned()),
+        VoiceJoinResult::Failed(error) => return notice(error),
     }
-
     let (track, queue_position) = {
-        let mut players = ctx.data().player_manager.write().await;
+        let mut players = state.player_manager.write().await;
         players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
     };
-
-    match playback_control(ctx.data(), guild_id, channel_id, PlaybackAction::Wake).await {
+    match playback_control(state, guild_id, channel_id, PlaybackAction::Wake).await {
         PlaybackControlResult::Accepted => {
-            let snapshot = {
-                let players = ctx.data().player_manager.read().await;
-                players.snapshot(guild_id)
-            };
+            let snapshot = state.player_manager.read().await.snapshot(guild_id);
             if snapshot
                 .now_playing
                 .as_ref()
                 .is_some_and(|current| current.id == track.id)
             {
-                ctx.reply_ephemeral_embed(ui::track_card("Now playing", &track, None))
-                    .await?;
+                ui::track_card("Now playing", &track, None)
             } else {
-                ctx.reply_ephemeral_embed(ui::track_card(
-                    "Added to queue",
-                    &track,
-                    Some(queue_position),
-                ))
-                .await?;
+                ui::track_card("Added to queue", &track, Some(queue_position))
             }
         }
         PlaybackControlResult::NotConnected => {
-            ctx.reply_status("The voice worker disconnected before playback could start.")
-                .await?;
+            notice("The voice worker disconnected before playback could start.".to_owned())
         }
-        PlaybackControlResult::WrongVoiceChannel { channel_id } => {
-            ctx.reply_status(format!(
-                "I am connected to <#{}>. Join that channel to control playback.",
-                channel_id.get()
-            ))
-            .await?;
-        }
+        PlaybackControlResult::WrongVoiceChannel { channel_id } => notice(format!(
+            "I am connected to <#{}>. Join that channel to control playback.",
+            channel_id.get()
+        )),
         PlaybackControlResult::NothingPlaying => {
-            ctx.reply_status("The track was queued, but the player did not start it.")
-                .await?;
+            notice("The track was queued, but the player did not start it.".to_owned())
         }
         PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
-            ctx.reply_ephemeral_embed(ui::track_card(
-                "Added to queue",
-                &track,
-                Some(queue_position),
-            ))
-            .await?;
+            ui::track_card("Added to queue", &track, Some(queue_position))
         }
-        PlaybackControlResult::Failed(error) => {
-            ctx.reply_status(error).await?;
-        }
+        PlaybackControlResult::Failed(error) => notice(error),
     }
-    Ok(())
 }
 
 fn autocomplete_request(input: &str) -> TrackRequest {
