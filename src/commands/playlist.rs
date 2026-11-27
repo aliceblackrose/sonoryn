@@ -3,6 +3,8 @@ use gloamwire::model::{ChannelId, GuildId, UserId};
 use sonoryn::media::{MAX_PLAYLIST_ITEMS, RequestedBy, TrackRequest};
 use tokio::sync::oneshot;
 
+use super::ui::ReplyUi;
+
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
     state::AppState,
@@ -28,34 +30,34 @@ pub(crate) async fn playlist(
 ) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
     let Some(_) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("Join a voice channel first, then run `/playlist`.")
+        ctx.reply_status("Join a voice channel first, then run `/playlist`.")
             .await?;
         return Ok(());
     };
     if !is_http_url(&url) {
-        ctx.reply_ephemeral("`/playlist` requires an HTTP or HTTPS playlist URL.")
+        ctx.reply_status("`/playlist` requires an HTTP or HTTPS playlist URL.")
             .await?;
         return Ok(());
     }
     let Some(limit) = playlist_limit(limit) else {
-        ctx.reply_ephemeral("Playlist limit must be between 1 and 25 tracks.")
+        ctx.reply_status("Playlist limit must be between 1 and 25 tracks.")
             .await?;
         return Ok(());
     };
     let request = match TrackRequest::new(url) {
         Ok(request) => request,
         Err(message) => {
-            ctx.reply_ephemeral(message).await?;
+            ctx.reply_status(message).await?;
             return Ok(());
         }
     };
@@ -64,19 +66,19 @@ pub(crate) async fn playlist(
     let resolved = match ctx.data().resolver.resolve_playlist(&request, limit).await {
         Ok(resolved) => resolved,
         Err(error) => {
-            ctx.reply_ephemeral(format!("I could not resolve that playlist: {error}"))
+            ctx.reply_status(format!("I could not resolve that playlist: {error}"))
                 .await?;
             return Ok(());
         }
     };
     if resolved.is_empty() {
-        ctx.reply_ephemeral("That playlist did not contain any playable tracks.")
+        ctx.reply_status("That playlist did not contain any playable tracks.")
             .await?;
         return Ok(());
     }
 
     let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("You left voice while I was resolving that playlist.")
+        ctx.reply_status("You left voice while I was resolving that playlist.")
             .await?;
         return Ok(());
     };
@@ -88,7 +90,7 @@ pub(crate) async fn playlist(
         VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
         } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am already connected to <#{}>. Join that channel to add a playlist.",
                 connected.get()
             ))
@@ -96,7 +98,7 @@ pub(crate) async fn playlist(
             return Ok(());
         }
         VoiceJoinResult::InProgress { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "A voice join for <#{}> is already in progress. Try again once it connects.",
                 channel_id.get()
             ))
@@ -104,11 +106,11 @@ pub(crate) async fn playlist(
             return Ok(());
         }
         VoiceJoinResult::Cancelled => {
-            ctx.reply_ephemeral("The voice join was cancelled.").await?;
+            ctx.reply_status("The voice join was cancelled.").await?;
             return Ok(());
         }
         VoiceJoinResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
             return Ok(());
         }
     }
@@ -150,7 +152,7 @@ pub(crate) async fn playlist(
         }
         PlaybackControlResult::Failed(error) => error,
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 

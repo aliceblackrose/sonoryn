@@ -4,6 +4,7 @@ mod playback;
 mod playback_controls;
 mod playlist;
 mod queue;
+mod ui;
 mod voice_control;
 
 use crate::state::AppState;
