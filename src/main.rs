@@ -265,7 +265,6 @@ fn registration_from_env() -> MainResult<Registration> {
 }
 
 async fn verify_runtime_dependencies() -> MainResult<()> {
-    verify_runtime_dependency("yt-dlp", &["--version"]).await?;
     verify_runtime_dependency("ffmpeg", &["-version"]).await?;
     Ok(())
 }

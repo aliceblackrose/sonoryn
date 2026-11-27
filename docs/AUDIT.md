@@ -13,7 +13,7 @@ Baseline: `dffcb19c020733545a78ca5bc17599e783502bdc` (premature-track-repeat pat
 | Medium | Decoder | Automatic reconnect of a non-seekable HTTP stream can restart content at an unknown offset. Leave recovery of interrupted known-duration media to the worker. |
 | Medium | Decoder | Remote manifests could reference additional FFmpeg protocol handlers. Restrict remote input protocols to HTTP(S), TCP/TLS, crypto and HTTP proxy; not a network sandbox. |
 | Medium | Media resolver | Out-of-range finite duration metadata could panic. Use checked conversion and reject blank titles. |
-| Medium | Resolver | Some yt-dlp invocations lacked an explicit end-of-options delimiter. Add it before targets and validate HTTP(S) URL shape. |
+| Medium | Resolver | Native YouTube resolution validates source URLs and uses typed requests rather than command-line arguments. |
 | Medium | Commands | Worker-dependent queue and playback commands could exceed the initial interaction deadline. Defer replies before waiting. |
 | Medium | Operations | Hung executable version checks could stall startup and /health. Bound subprocess waits and kill on drop. |
 | Medium | CI | Formatting failure hid downstream compiler and test errors. Run validation steps even after preceding failures; keep every failure fatal. Add shell syntax checks. |
@@ -24,7 +24,7 @@ These are not represented as fixed or live-verified by the patch.
 
 | Priority | Area | Risk and recommended work |
 |---|---|---|
-| High | Network trust | Arbitrary HTTP(S) sources, yt-dlp extraction, DNS and redirects can reach unintended internal endpoints. Run media subprocesses with restricted outbound networking and no access to secrets or internal services; URL validation alone is not an SSRF defense. |
+| High | Network trust | Even with YouTube-only resolution, DNS, redirects and media manifests can reach unintended internal endpoints. Run media subprocesses with restricted outbound networking and no access to secrets or internal services; URL validation alone is not an SSRF defense. |
 | High | Queue authorization | Authorization is checked separately from command-side queue mutations, leaving a race around leave, move and concurrent commands. Move mutations into the guild actor with authorization and generation checks. |
 | High | Voice lifecycle | Unexpected external moves/kicks and voice server changes need reconciliation with live gateway voice state. Do not silently rejoin after a moderator disconnect. Add integration tests. |
 | High | Durability | Periodic snapshots are best effort; an abrupt crash can lose acknowledged mutations. Playback position and player/history snapshots are not a fully atomic actor transaction. Use ordered durable command commits for stronger guarantees. |
@@ -33,7 +33,7 @@ These are not represented as fixed or live-verified by the patch.
 | Medium | Persistence | No cross-process ownership lock prevents two processes writing one database. Do not run two instances against the same state file. |
 | Medium | Data lifecycle | Guild history and requester identifiers remain in SQLite; establish guild-removal and retention policies and backup/restore tests. |
 | Medium | Supply chain | Cargo.lock is not tracked; dependency resolution is not fully reproducible. Generate a lockfile with the pinned toolchain, review dependencies with cargo-audit/deny and pin CI actions to reviewed SHAs. |
-| Low | UI/search | Undocumented YouTube search HTML can change; no search cache/coalescing; embeds lack actual elapsed position. Add search load testing and live metadata fixtures. |
+| Low | UI/search | Undocumented YouTube upstream responses can change; no search cache/coalescing; embeds lack actual elapsed position. Add search load testing and live metadata fixtures. |
 
 ## Validation
 

@@ -11,6 +11,7 @@ gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands
 gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", branch = "main", features = ["cache", "tracing", "voice"] }
 libdave-rs = { git = "https://github.com/mineygg/libdave-rs", rev = "100c9bca503ee3a5f29ea54db0af76589a42c9ca", default-features = false }
 rand = "0.9"
+rustypipe = "=0.11.4"
 reqwest = { version = "0.13", default-features = false, features = ["query", "rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

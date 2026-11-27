@@ -161,12 +161,7 @@ pub(super) async fn enqueue_card(
 }
 
 fn autocomplete_request(input: &str) -> TrackRequest {
-    let target = if is_http_url(input) {
-        input.to_owned()
-    } else {
-        format!("ytsearch{AUTOCOMPLETE_LIMIT}:{input}")
-    };
-    TrackRequest::new(target).expect("autocomplete input was checked as non-empty")
+    TrackRequest::new(input).expect("autocomplete input was checked as non-empty")
 }
 
 fn autocomplete_choices(tracks: Vec<ResolvedTrack>) -> Vec<AutocompleteChoice> {
@@ -317,9 +312,7 @@ mod tests {
 
     use sonoryn::media::{ResolvedTrack, TrackMetadata, TrackSource};
 
-    use super::{
-        AUTOCOMPLETE_LIMIT, autocomplete_choice, autocomplete_choices, autocomplete_request,
-    };
+    use super::{autocomplete_choice, autocomplete_choices, autocomplete_request};
 
     #[test]
     fn autocomplete_never_echoes_the_query_as_a_fake_result() {
@@ -327,12 +320,9 @@ mod tests {
     }
 
     #[test]
-    fn autocomplete_turns_free_text_into_multi_result_search() {
+    fn autocomplete_keeps_free_text_exact() {
         let request = autocomplete_request("artist song");
-        assert_eq!(
-            request.input(),
-            format!("ytsearch{AUTOCOMPLETE_LIMIT}:artist song")
-        );
+        assert_eq!(request.input(), "artist song");
     }
 
     #[test]

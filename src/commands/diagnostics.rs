@@ -25,15 +25,15 @@ pub(crate) async fn ping(ctx: Context<AppState>) -> Result<()> {
 pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
-    let (ytdlp, ffmpeg) = tokio::join!(
-        tool_health("yt-dlp", &["--version"]),
-        tool_health("ffmpeg", &["-version"]),
-    );
+    let ffmpeg = tool_health("ffmpeg", &["-version"]).await;
 
     let mut embed = ui::notice("System health", "Runtime dependency check");
     embed.fields = vec![
         ui::field("Gateway", "Online"),
-        ui::field("yt-dlp", ytdlp),
+        ui::field(
+            "Resolver",
+            "RustyPipe 0.11.4 (built in; upstream not probed)",
+        ),
         ui::field("FFmpeg", ffmpeg),
     ];
     ctx.reply_ephemeral_embed(embed).await?;

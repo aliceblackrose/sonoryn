@@ -22,11 +22,13 @@ pub enum ResolveError {
     #[error("resolver backend `{backend}` timed out after {timeout:?}")]
     TimedOut { backend: String, timeout: Duration },
 
-    #[error("resolver backend `{backend}` exited unsuccessfully: {message}")]
+    #[error("resolver backend `{backend}` failed: {message}")]
     BackendFailed { backend: String, message: String },
 
     #[error("resolver backend returned no matching track")]
     NoResults,
+    #[error("unsupported media source; only YouTube URLs and searches are supported")]
+    UnsupportedSource,
 
     #[error("resolver output was missing required field `{field}`")]
     MissingField { field: &'static str },
