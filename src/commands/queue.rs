@@ -8,7 +8,7 @@ use sonoryn::{
 };
 use tokio::sync::oneshot;
 
-use super::ui::{self, ReplyUi};
+use super::{panel, ui::ReplyUi};
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult},
@@ -94,29 +94,13 @@ pub(crate) async fn queue_page(
     #[min = 1]
     page: Option<i64>,
 ) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_status("This command can only be used in a server.")
-            .await?;
-        return Ok(());
-    };
     let page = page.unwrap_or(1);
     let Some(page_index) = page_index(page) else {
         ctx.reply_status("That queue page is invalid.").await?;
         return Ok(());
     };
 
-    let (snapshot, loop_mode) = {
-        let players = ctx.data().player_manager.read().await;
-        (players.snapshot(guild_id), players.loop_mode(guild_id))
-    };
-    ctx.reply_ephemeral_embed(ui::queue_card(
-        "Music queue",
-        render_queue_page(&snapshot, page_index),
-        &snapshot,
-        loop_mode,
-    ))
-    .await?;
-    Ok(())
+    panel::reply_view(&ctx, panel::View::Queue(page_index)).await
 }
 
 #[command(
@@ -151,22 +135,7 @@ pub(crate) async fn previous(ctx: Context<AppState>) -> Result<()> {
 
 #[command(description = "Show recent playback history", guild_only)]
 pub(crate) async fn history(ctx: Context<AppState>) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_status("This command can only be used in a server.")
-            .await?;
-        return Ok(());
-    };
-
-    let history = {
-        let history = ctx.data().history_manager.read().await;
-        history.snapshot(guild_id)
-    };
-    let mut embed = ui::notice("Recently played", render_history(&history));
-    embed
-        .fields
-        .push(ui::field("Tracks in history", history.len().to_string()));
-    ctx.reply_ephemeral_embed(embed).await?;
-    Ok(())
+    panel::reply_view(&ctx, panel::View::History).await
 }
 
 fn loop_mode_name(mode: LoopMode) -> &'static str {
@@ -182,7 +151,7 @@ fn page_index(page: i64) -> Option<usize> {
         .and_then(|index| usize::try_from(index).ok())
 }
 
-fn render_queue_page(snapshot: &PlayerSnapshot, page_index: usize) -> String {
+pub(super) fn render_queue_page(snapshot: &PlayerSnapshot, page_index: usize) -> String {
     if snapshot.is_idle() {
         return "The queue is empty.".to_owned();
     }
@@ -214,7 +183,7 @@ fn render_queue_page(snapshot: &PlayerSnapshot, page_index: usize) -> String {
     output.trim_end().to_owned()
 }
 
-fn render_history(history: &[Track]) -> String {
+pub(super) fn render_history(history: &[Track]) -> String {
     if history.is_empty() {
         return "Playback history is empty.".to_owned();
     }

@@ -8,7 +8,7 @@ use sonoryn::{
 };
 use tokio::sync::oneshot;
 
-use super::ui::{self, ReplyUi};
+use super::{panel, ui::{self, ReplyUi}};
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
@@ -312,12 +312,11 @@ pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
         (players.snapshot(guild_id), players.loop_mode(guild_id))
     };
 
-    ctx.reply_ephemeral_embed(ui::queue_card(
-        "Music queue",
-        render_queue(&snapshot),
-        &snapshot,
-        loop_mode,
-    ))
+    panel::reply_card(
+        &ctx,
+        ui::queue_card("Music queue", render_queue(&snapshot), &snapshot, loop_mode),
+        panel::launch_buttons(),
+    )
     .await?;
     Ok(())
 }
@@ -327,23 +326,7 @@ pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
     guild_only
 )]
 pub(crate) async fn nowplaying(ctx: Context<AppState>) -> Result<()> {
-    let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_status("This command can only be used in a server.")
-            .await?;
-        return Ok(());
-    };
-
-    let current = {
-        let players = ctx.data().player_manager.read().await;
-        players.snapshot(guild_id).now_playing
-    };
-
-    let embed = current.as_ref().map_or_else(
-        || ui::notice("Now playing", "Nothing is playing right now."),
-        |track| ui::track_card("Current track", track, None),
-    );
-    ctx.reply_ephemeral_embed(embed).await?;
-    Ok(())
+    panel::reply_view(&ctx, panel::View::Player).await
 }
 
 async fn run_simple_control(
@@ -441,7 +424,7 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
     }
 }
 
-async fn current_voice_channel(
+pub(super) async fn current_voice_channel(
     data: &AppState,
     guild_id: GuildId,
     user_id: UserId,
@@ -476,7 +459,7 @@ async fn ensure_voice(
     })
 }
 
-async fn playback_control(
+pub(super) async fn playback_control(
     data: &AppState,
     guild_id: GuildId,
     channel_id: ChannelId,
@@ -506,7 +489,7 @@ async fn playback_control(
     })
 }
 
-fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserId> {
+pub(super) fn invoking_user_id(interaction: &gloamwire::model::Interaction) -> Option<UserId> {
     interaction
         .member
         .as_ref()

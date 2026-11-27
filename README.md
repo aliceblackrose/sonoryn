@@ -19,7 +19,8 @@ Implemented prototype commands:
 - `/remove <position>` — remove a queued track by its one-based queue position.
 - `/move <from> <to>` — reorder queued tracks without touching the current track.
 - `/queue` — inspect the current and queued tracks.
-- `/nowplaying` — inspect the active track.
+- `/nowplaying` — open the interactive player for the active track.
+- `/player` — open the private, button-driven music dashboard.
 - `/join` and `/leave` — explicitly manage the guild voice session.
 - `/health` — recheck the local `yt-dlp` and FFmpeg runtime dependencies.
 - `/ping` and `/voice` — basic Gateway/voice-state diagnostics.
@@ -27,6 +28,20 @@ Implemented prototype commands:
 Queue-mutating commands use the same authoritative same-voice-channel check as playback controls. Their positions refer only to the queued entries shown under `Queue:`; the current track is not position 1.
 
 The remaining roadmap work is reliability, richer controls, persistence, sharding, and real-world Discord validation/hardening; the current target is a development prototype, not a production music service.
+
+### Interactive player
+
+Open `/player` once, or use **Open player** after adding a track. The panel provides:
+
+- **Add track** opens a Discord form for a song name or URL, sharing the same resolution and voice-join path as `/play`.
+- **Previous**, **Pause**, **Resume**, **Skip**, and **Restart track** operate on the current guild player.
+- **Queue** browses pages with Earlier, Later, and Refresh; pages are clamped if the queue shrinks.
+- **Shuffle**, **Repeat** (Off → Track → Queue), **History**, and **Mixer** (mute or 25/50/75/100% presets) are available without another command.
+- The Player tab shows track artwork, duration, source, requester, upcoming track, and repeat mode. **Open source** opens its public URL.
+
+Panels are ephemeral and refresh on interaction, not continuously. Playback and queue changes require the same voice channel as the bot; browsing does not. Controls always act on the live guild player, not a historical track shown on an old message. Destructive stop/clear remains an explicit slash command. Slash commands continue to work.
+
+The interactive UI uses Gloamwire's message-button API from [PR #47](https://github.com/aliceblackrose/gloamwire/pull/47). Keep the shared Gloamwire dependency on the same source as `gloam-commands`; update the Git dependency if building with an older local lockfile.
 
 ## Design rules
 

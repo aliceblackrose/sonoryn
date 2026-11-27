@@ -16,7 +16,7 @@ use gloamwire::{
 };
 use tokio::{
     process::Command,
-    sync::{mpsc, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
     task::JoinSet,
 };
 use tracing::{error, info, warn};
@@ -60,6 +60,7 @@ async fn main() -> MainResult<()> {
         .build()?;
 
     let mut command_tasks = JoinSet::new();
+    let panel_slots = std::sync::Arc::new(Semaphore::new(32));
     let mut synchronized = registration == Registration::None;
     let mut bot_user_id: Option<UserId> = None;
 
@@ -107,6 +108,26 @@ async fn main() -> MainResult<()> {
                         };
 
                         voice_manager.handle_dispatch(dispatch, &mut gateway).await;
+
+                        if let TypedDispatchEvent::InteractionCreate(interaction) = &typed
+                            && commands::panel::owns(interaction)
+                        {
+                            let interaction = interaction.clone();
+                            let state = state.clone();
+                            let rest = rest.clone();
+                            let permit = panel_slots.clone().try_acquire_owned().ok();
+                            command_tasks.spawn(async move {
+                                let busy = permit.is_none();
+                                if let Err(error) = commands::panel::handle(
+                                    &rest, &state, &interaction, busy,
+                                )
+                                .await
+                                {
+                                    error!(%error, "player interaction failed");
+                                }
+                                drop(permit);
+                            });
+                        }
 
                         if let TypedDispatchEvent::Ready(ready) = &typed {
                             bot_user_id = Some(ready.user.id);
