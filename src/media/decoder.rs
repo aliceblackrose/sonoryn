@@ -179,11 +179,11 @@ impl FfmpegOpusDecoder {
         // The voice worker refreshes signed URLs and seeks on premature EOF.
         if media.url.starts_with("https://") || media.url.starts_with("http://") {
             command
+                .arg("-protocol_whitelist")
+                .arg("http,https,tcp,tls,crypto,httpproxy")
                 .arg("-rw_timeout")
                 .arg("15000000")
                 .arg("-reconnect")
-                .arg("1")
-                .arg("-reconnect_streamed")
                 .arg("1")
                 .arg("-reconnect_on_network_error")
                 .arg("1")
@@ -332,6 +332,7 @@ struct OggPacketReader<R> {
     reader: R,
     pending: VecDeque<Vec<u8>>,
     partial: Vec<u8>,
+    saw_eos: bool,
 }
 
 impl<R> OggPacketReader<R>
@@ -343,6 +344,7 @@ where
             reader,
             pending: VecDeque::new(),
             partial: Vec::new(),
+            saw_eos: false,
         }
     }
 
@@ -356,6 +358,11 @@ where
                 if !self.partial.is_empty() {
                     return Err(DecodeError::InvalidOgg(
                         "stream ended in the middle of an Ogg packet".to_owned(),
+                    ));
+                }
+                if !self.saw_eos {
+                    return Err(DecodeError::InvalidOgg(
+                        "Ogg stream ended without an end-of-stream page".to_owned(),
                     ));
                 }
                 return Ok(None);
@@ -405,6 +412,7 @@ where
         let mut payload = vec![0_u8; payload_len];
         self.reader.read_exact(&mut payload).await?;
         self.process_page(header_type, &lacing, &payload)?;
+        self.saw_eos = header_type & 0x04 != 0;
         Ok(true)
     }
 
@@ -475,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn reads_multiple_packets_from_one_ogg_page() {
         let payload = [b"OpusHead".as_slice(), b"OpusTags".as_slice(), &[1, 2, 3]].concat();
-        let bytes = ogg_page(0x02, &[8, 8, 3], &payload);
+        let bytes = ogg_page(0x06, &[8, 8, 3], &payload);
         let mut reader = OggPacketReader::new(Cursor::new(bytes));
 
         assert_eq!(
@@ -499,11 +507,22 @@ mod tests {
             .map(|value| (value % 251) as u8)
             .collect::<Vec<_>>();
         let mut bytes = ogg_page(0x02, &[255], &packet[..255]);
-        bytes.extend(ogg_page(0x01, &[45], &packet[255..]));
+        bytes.extend(ogg_page(0x05, &[45], &packet[255..]));
         let mut reader = OggPacketReader::new(Cursor::new(bytes));
 
         assert_eq!(reader.next_packet().await.expect("packet"), Some(packet));
         assert_eq!(reader.next_packet().await.expect("eof"), None);
+    }
+
+    #[tokio::test]
+    async fn rejects_truncated_ogg_stream_without_eos() {
+        let bytes = ogg_page(0x02, &[3], &[1, 2, 3]);
+        let mut reader = OggPacketReader::new(Cursor::new(bytes));
+        assert_eq!(
+            reader.next_packet().await.expect("packet"),
+            Some(vec![1, 2, 3])
+        );
+        assert!(reader.next_packet().await.is_err());
     }
 
     #[test]

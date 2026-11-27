@@ -346,6 +346,7 @@ async fn require_voice_channel(
             .await?;
         return Ok(None);
     };
+    ctx.defer_ephemeral().await?;
     Ok(Some((guild_id, channel_id)))
 }
 

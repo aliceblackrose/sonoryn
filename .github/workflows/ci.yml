@@ -24,7 +24,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Check shell scripts
+        if: ${{ !cancelled() }}
+        run: bash -n install.sh && bash -n update.sh
+
       - name: Verify single Gloamwire dependency
+        if: ${{ !cancelled() }}
         run: |
           cargo metadata --format-version 1 > /tmp/sonoryn-metadata.json
           python3 - <<'PY'
@@ -43,12 +48,15 @@ jobs:
           PY
 
       - name: Run tests
+        if: ${{ !cancelled() }}
         run: cargo test --all-targets --all-features
 
       - name: Run Clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build documentation
+        if: ${{ !cancelled() }}
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features
