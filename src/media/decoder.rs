@@ -588,8 +588,8 @@ mod tests {
     use gloamwire::voice::VoiceOpusFrameDuration;
 
     use super::{
-        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, decoder_access_status, decoder_stderr_reason,
-        format_seek_offset, render_http_headers,
+        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, decoder_access_status,
+        decoder_stderr_reason, format_seek_offset, render_http_headers,
     };
 
     #[test]
@@ -604,7 +604,10 @@ mod tests {
             decoder_stderr_reason("Unknown encoder 'libopus'"),
             Some("audio encoder unavailable")
         );
-        assert_eq!(decoder_stderr_reason("https://example.com/?sig=secret"), None);
+        assert_eq!(
+            decoder_stderr_reason("https://example.com/?sig=secret"),
+            None
+        );
     }
 
     #[tokio::test]
