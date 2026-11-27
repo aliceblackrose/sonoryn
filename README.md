@@ -22,7 +22,7 @@ Implemented prototype commands:
 - `/nowplaying` — open the interactive player for the active track.
 - `/player` — open the private, button-driven music dashboard.
 - `/join` and `/leave` — explicitly manage the guild voice session.
-- `/health` — report the native resolver and check FFmpeg / optional yt-dlp.
+- `/health` — report the native resolver and check FFmpeg.
 - `/ping` and `/voice` — basic Gateway/voice-state diagnostics.
 
 Queue-mutating commands use the same authoritative same-voice-channel check as playback controls. Their positions refer only to the queued entries shown under `Queue:`; the current track is not position 1.
@@ -83,7 +83,7 @@ Install:
 - FFmpeg with `libopus` support available as `ffmpeg` on `PATH`;
 - a Discord application/bot with access to the target guild and permission to connect/speak in the target voice channel.
 
-Sonoryn performs a startup preflight for `ffmpeg -version`. RustyPipe is linked into the application; no yt-dlp executable is required for the default build. Native resolution supports YouTube watch, short, live, playlist and YouTube Music watch URLs, as well as free-text search. Other source services require the optional legacy backend.
+Sonoryn performs a startup preflight for `ffmpeg -version`. RustyPipe is linked into the application; no separate media extractor executable is required. Native resolution supports YouTube watch, short, live, playlist and YouTube Music watch URLs, as well as free-text search. Non-YouTube sources are currently unsupported.
 
 Configure:
 
@@ -101,13 +101,7 @@ RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
 cargo run
 ```
 
-For optional legacy extraction, install `yt-dlp` separately and run:
-
-```bash
-cargo run --features yt-dlp-fallback
-```
-
-This feature attempts the native resolver first, then yt-dlp on failure within the remaining resolution budget. It does not require yt-dlp at startup. `/health` reports whether the optional executable is available. RustyPipe's upstream extractor may fail on some YouTube content; live media access is not guaranteed. Only resolve and play content you are authorized to use.
+RustyPipe's upstream extractor may fail on some YouTube content; live media access is not guaranteed. Only resolve and play content you are authorized to use.
 
 Then join a normal voice channel and use, for example:
 

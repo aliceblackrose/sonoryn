@@ -5,32 +5,20 @@ use rustypipe::{
     client::RustyPipe,
     model::{Thumbnail, VideoItem},
 };
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 
 use super::{
     MAX_PLAYLIST_ITEMS, PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track,
     TrackMetadata, TrackRequest, TrackResolver, TrackSource,
 };
-#[cfg(feature = "yt-dlp-fallback")]
-use super::YtDlpResolver;
 
 const BACKEND: &str = "rustypipe";
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn native_timeout() -> Duration {
-    if cfg!(feature = "yt-dlp-fallback") {
-        RESOLVE_TIMEOUT / 2
-    } else {
-        RESOLVE_TIMEOUT
-    }
-}
-
-/// Native YouTube resolver with an optional legacy extractor.
+/// Native YouTube resolver.
 #[derive(Default)]
 pub struct RustyPipeResolver {
     client: RustyPipe,
-    #[cfg(feature = "yt-dlp-fallback")]
-    fallback: YtDlpResolver,
 }
 
 impl RustyPipeResolver {
@@ -137,43 +125,14 @@ impl RustyPipeResolver {
                 timeout: budget,
             })?
     }
-
-    #[cfg(feature = "yt-dlp-fallback")]
-    async fn fallback_if_needed<T>(
-        &self,
-        result: Result<T, ResolveError>,
-        deadline: Instant,
-        operation: impl Future<Output = Result<T, ResolveError>>,
-    ) -> Result<T, ResolveError> {
-        if result.is_ok() {
-            return result;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return result;
-        }
-        self.bounded(remaining, operation).await
-    }
 }
 
 impl TrackResolver for RustyPipeResolver {
     fn resolve<'a>(&'a self, request: &'a TrackRequest) -> ResolveFuture<'a, ResolvedTrack> {
         Box::pin(async move {
-            #[cfg(feature = "yt-dlp-fallback")]
-            let deadline = Instant::now() + RESOLVE_TIMEOUT;
-            let result = self
-                .bounded(native_timeout(), self.resolve_many(request, 1, false))
+            self.bounded(RESOLVE_TIMEOUT, self.resolve_many(request, 1, false))
                 .await
-                .and_then(|tracks| tracks.into_iter().next().ok_or(ResolveError::NoResults));
-            #[cfg(feature = "yt-dlp-fallback")]
-            let result = self
-                .fallback_if_needed(
-                    result,
-                    deadline,
-                    self.fallback.resolve(request),
-                )
-                .await;
-            result
+                .and_then(|tracks| tracks.into_iter().next().ok_or(ResolveError::NoResults))
         })
     }
 
@@ -183,20 +142,8 @@ impl TrackResolver for RustyPipeResolver {
         limit: usize,
     ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
         Box::pin(async move {
-            #[cfg(feature = "yt-dlp-fallback")]
-            let deadline = Instant::now() + RESOLVE_TIMEOUT;
-            let result = self
-                .bounded(native_timeout(), self.resolve_many(request, limit, true))
-                .await;
-            #[cfg(feature = "yt-dlp-fallback")]
-            let result = self
-                .fallback_if_needed(
-                    result,
-                    deadline,
-                    self.fallback.resolve_playlist(request, limit),
-                )
-                .await;
-            result
+            self.bounded(RESOLVE_TIMEOUT, self.resolve_many(request, limit, true))
+                .await
         })
     }
 
@@ -207,47 +154,16 @@ impl TrackResolver for RustyPipeResolver {
         budget: Duration,
     ) -> ResolveFuture<'a, Vec<ResolvedTrack>> {
         Box::pin(async move {
-            let deadline = Instant::now() + budget;
-            #[cfg(feature = "yt-dlp-fallback")]
-            let native_budget = budget / 2;
-            #[cfg(not(feature = "yt-dlp-fallback"))]
-            let native_budget = budget;
-            let result = self
-                .bounded(native_budget, self.resolve_many(request, limit, false))
-                .await;
-            #[cfg(feature = "yt-dlp-fallback")]
-            let result = self
-                .fallback_if_needed(
-                    result,
-                    deadline,
-                    self.fallback.suggest(
-                        request,
-                        limit,
-                        deadline.saturating_duration_since(Instant::now()),
-                    ),
-                )
-                .await;
-            #[cfg(not(feature = "yt-dlp-fallback"))]
-            let _ = deadline;
-            result
+            self.bounded(
+                budget.min(RESOLVE_TIMEOUT),
+                self.resolve_many(request, limit, false),
+            )
+            .await
         })
     }
 
     fn resolve_media<'a>(&'a self, track: &'a Track) -> ResolveFuture<'a, PlayableMedia> {
-        Box::pin(async move {
-            #[cfg(feature = "yt-dlp-fallback")]
-            let deadline = Instant::now() + RESOLVE_TIMEOUT;
-            let result = self.bounded(native_timeout(), self.media(track)).await;
-            #[cfg(feature = "yt-dlp-fallback")]
-            let result = self
-                .fallback_if_needed(
-                    result,
-                    deadline,
-                    self.fallback.resolve_media(track),
-                )
-                .await;
-            result
-        })
+        Box::pin(async move { self.bounded(RESOLVE_TIMEOUT, self.media(track)).await })
     }
 }
 
@@ -332,18 +248,6 @@ fn valid_video_id(id: &str) -> bool {
 
 fn target(input: &str, prefer_playlist: bool) -> Result<Target, ResolveError> {
     let input = input.trim();
-    if let Some((prefix, query)) = input.split_once(':')
-        && prefix
-            .strip_prefix("ytsearch")
-            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        return if query.trim().is_empty() {
-            Err(ResolveError::NoResults)
-        } else {
-            Ok(Target::Search(query.trim().to_owned()))
-        };
-    }
-
     let Ok(url) = reqwest::Url::parse(input) else {
         return if input.is_empty() {
             Err(ResolveError::NoResults)
@@ -399,9 +303,9 @@ fn valid_media_url(url: &str) -> bool {
         url.scheme() == "https"
             && url.username().is_empty()
             && url.password().is_none()
-            && url.host_str().is_some_and(|host| {
-                host == "googlevideo.com" || host.ends_with(".googlevideo.com")
-            })
+            && url
+                .host_str()
+                .is_some_and(|host| host == "googlevideo.com" || host.ends_with(".googlevideo.com"))
     })
 }
 
@@ -411,31 +315,55 @@ mod tests {
 
     #[test]
     fn parses_search_and_video_targets() {
-        assert_eq!(target("ytsearch5:artist song", false).unwrap(), Target::Search("artist song".to_owned()));
+        assert_eq!(
+            target("artist song", false).unwrap(),
+            Target::Search("artist song".to_owned())
+        );
         for url in [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtu.be/dQw4w9WgXcQ",
             "https://www.youtube.com/shorts/dQw4w9WgXcQ",
         ] {
-            assert_eq!(target(url, false).unwrap(), Target::Video("dQw4w9WgXcQ".to_owned()));
+            assert_eq!(
+                target(url, false).unwrap(),
+                Target::Video("dQw4w9WgXcQ".to_owned())
+            );
         }
     }
 
     #[test]
     fn playlist_intent_takes_priority_only_when_requested() {
         let url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL_example";
-        assert_eq!(target(url, true).unwrap(), Target::Playlist("PL_example".to_owned()));
-        assert_eq!(target(url, false).unwrap(), Target::Video("dQw4w9WgXcQ".to_owned()));
+        assert_eq!(
+            target(url, true).unwrap(),
+            Target::Playlist("PL_example".to_owned())
+        );
+        assert_eq!(
+            target(url, false).unwrap(),
+            Target::Video("dQw4w9WgXcQ".to_owned())
+        );
     }
 
     #[test]
     fn rejects_untrusted_hosts_and_invalid_media_urls() {
-        assert!(target("https://youtube.com.example.test/watch?v=dQw4w9WgXcQ", false).is_err());
+        assert!(
+            target(
+                "https://youtube.com.example.test/watch?v=dQw4w9WgXcQ",
+                false
+            )
+            .is_err()
+        );
         assert!(target("https://user@youtube.com/watch?v=dQw4w9WgXcQ", false).is_err());
-        assert!(valid_media_url("https://example.googlevideo.com/videoplayback"));
-        assert!(!valid_media_url("https://googlevideo.com.example.test/videoplayback"));
-        assert!(!valid_media_url("http://example.googlevideo.com/videoplayback"));
+        assert!(valid_media_url(
+            "https://example.googlevideo.com/videoplayback"
+        ));
+        assert!(!valid_media_url(
+            "https://googlevideo.com.example.test/videoplayback"
+        ));
+        assert!(!valid_media_url(
+            "http://example.googlevideo.com/videoplayback"
+        ));
     }
 
     #[test]

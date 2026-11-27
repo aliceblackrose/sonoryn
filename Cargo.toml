@@ -6,10 +6,6 @@ rust-version = "1.98"
 description = "A protocol-first Discord music bot built on Gloamwire"
 repository = "https://github.com/aliceblackrose/sonoryn"
 
-[features]
-default = []
-yt-dlp-fallback = []
-
 [dependencies]
 gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "21db6bb6050add656f51706c03c12ff80f6f709f", features = ["tracing"] }
 gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", branch = "main", features = ["cache", "tracing", "voice"] }

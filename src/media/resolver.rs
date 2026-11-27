@@ -27,7 +27,7 @@ pub enum ResolveError {
 
     #[error("resolver backend returned no matching track")]
     NoResults,
-    #[error("unsupported media source; this build supports YouTube URLs and searches by default")]
+    #[error("unsupported media source; only YouTube URLs and searches are supported")]
     UnsupportedSource,
 
     #[error("resolver output was missing required field `{field}`")]

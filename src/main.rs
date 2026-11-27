@@ -265,7 +265,6 @@ fn registration_from_env() -> MainResult<Registration> {
 }
 
 async fn verify_runtime_dependencies() -> MainResult<()> {
-    // The legacy extractor is optional; native YouTube resolution does not need it.
     verify_runtime_dependency("ffmpeg", &["-version"]).await?;
     Ok(())
 }

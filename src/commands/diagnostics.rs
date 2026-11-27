@@ -26,16 +26,14 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
     let ffmpeg = tool_health("ffmpeg", &["-version"]).await;
-    #[cfg(feature = "yt-dlp-fallback")]
-    let ytdlp = tool_health("yt-dlp", &["--version"]).await;
-    #[cfg(not(feature = "yt-dlp-fallback"))]
-    let ytdlp = "not compiled in".to_owned();
 
     let mut embed = ui::notice("System health", "Runtime dependency check");
     embed.fields = vec![
         ui::field("Gateway", "Online"),
-        ui::field("Resolver", "RustyPipe 0.11.4 (built in; upstream not probed)"),
-        ui::field("yt-dlp fallback", ytdlp),
+        ui::field(
+            "Resolver",
+            "RustyPipe 0.11.4 (built in; upstream not probed)",
+        ),
         ui::field("FFmpeg", ffmpeg),
     ];
     ctx.reply_ephemeral_embed(embed).await?;
