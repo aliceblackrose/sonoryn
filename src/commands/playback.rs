@@ -4,7 +4,7 @@ use gloam_commands::prelude::*;
 use gloamwire::model::{ChannelId, GuildId, UserId};
 use sonoryn::{
     media::{RequestedBy, Track, TrackRequest},
-    player::PlayerSnapshot,
+    player::{PlayerSnapshot, QUEUE_CAPACITY_MESSAGE},
 };
 use tokio::sync::oneshot;
 
@@ -116,6 +116,11 @@ pub(crate) async fn play(
 
     let (track, queue_position) = {
         let mut players = ctx.data().player_manager.write().await;
+        if !players.can_enqueue(guild_id, 1) {
+            drop(players);
+            ctx.reply_status(QUEUE_CAPACITY_MESSAGE).await?;
+            return Ok(());
+        }
         players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
     };
 

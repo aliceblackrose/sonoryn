@@ -1,6 +1,9 @@
 use gloam_commands::prelude::*;
 use gloamwire::model::{ChannelId, GuildId, UserId};
-use sonoryn::media::{MAX_PLAYLIST_ITEMS, RequestedBy, TrackRequest};
+use sonoryn::{
+    media::{MAX_PLAYLIST_ITEMS, RequestedBy, TrackRequest},
+    player::QUEUE_CAPACITY_MESSAGE,
+};
 use tokio::sync::oneshot;
 
 use super::ui::ReplyUi;
@@ -118,6 +121,11 @@ pub(crate) async fn playlist(
     let added = resolved.len();
     let first_position = {
         let mut players = ctx.data().player_manager.write().await;
+        if !players.can_enqueue(guild_id, added) {
+            drop(players);
+            ctx.reply_status(QUEUE_CAPACITY_MESSAGE).await?;
+            return Ok(());
+        }
         let mut first_position = None;
         for track in resolved {
             let item_request = TrackRequest::new(track.metadata.webpage_url.clone())

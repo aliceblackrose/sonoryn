@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
 
+/// Maximum outstanding tracks per guild, including the active track.
+pub const MAX_GUILD_TRACKS: usize = 250;
+/// Maximum outstanding tracks across all guilds.
+pub const MAX_TOTAL_TRACKS: usize = 10_000;
+/// Shared user-facing message when either admission limit is reached.
+pub const QUEUE_CAPACITY_MESSAGE: &str =
+    "The music queue is at capacity. Remove tracks or wait for playback to finish.";
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoopMode {
     #[default]
@@ -96,6 +104,29 @@ impl PlayerManager {
         let previous = player.loop_mode;
         player.loop_mode = mode;
         previous
+    }
+
+    /// Checks capacity for an entire batch, counting active tracks as well.
+    ///
+    /// Call under the same exclusive manager lock as the subsequent mutations.
+    /// Existing restored queues are never truncated, but cannot grow past the
+    /// limits. Moving or looping an existing track does not consume capacity.
+    #[must_use]
+    pub fn can_enqueue(&self, guild_id: GuildId, additional: usize) -> bool {
+        let outstanding = |player: &GuildPlayer| {
+            player
+                .queue
+                .len()
+                .saturating_add(usize::from(player.now_playing.is_some()))
+        };
+        let guild_count = self.players.get(&guild_id).map_or(0, outstanding);
+        let total = self
+            .players
+            .values()
+            .map(outstanding)
+            .fold(0usize, usize::saturating_add);
+        additional <= MAX_GUILD_TRACKS.saturating_sub(guild_count)
+            && additional <= MAX_TOTAL_TRACKS.saturating_sub(total)
     }
 
     /// Converts resolver output into a durable track and appends it to the guild
@@ -283,7 +314,7 @@ mod tests {
 
     use gloamwire::model::{GuildId, UserId};
 
-    use super::{LoopMode, PlayerManager};
+    use super::{LoopMode, MAX_GUILD_TRACKS, MAX_TOTAL_TRACKS, PlayerManager};
     use crate::media::{
         RequestedBy, ResolvedTrack, Track, TrackId, TrackMetadata, TrackRequest, TrackSource,
     };
@@ -516,6 +547,39 @@ mod tests {
         let before = players.snapshot(guild_id);
         assert_eq!(players.shuffle_queued(guild_id), 1);
         assert_eq!(players.snapshot(guild_id), before);
+    }
+
+    #[test]
+    fn capacity_counts_active_tracks_and_rejects_whole_batches() {
+        let guild = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        for id in 1..MAX_GUILD_TRACKS as u64 {
+            players.enqueue(guild, track(id, "song"));
+        }
+        assert!(players.can_enqueue(guild, 1));
+        assert!(!players.can_enqueue(guild, 2));
+        players.start_next(guild).expect("active track");
+        assert!(!players.can_enqueue(guild, 2));
+        players.enqueue(guild, track(MAX_GUILD_TRACKS as u64, "last"));
+        assert!(!players.can_enqueue(guild, 1));
+        players.finish_current(guild, TrackId::new(1));
+        assert!(players.can_enqueue(guild, 1));
+    }
+
+    #[test]
+    fn capacity_is_shared_across_guilds() {
+        let mut players = PlayerManager::new();
+        for guild in 0..(MAX_TOTAL_TRACKS / MAX_GUILD_TRACKS) as u64 {
+            for id in 0..MAX_GUILD_TRACKS as u64 {
+                players.enqueue(
+                    GuildId::new(guild + 1),
+                    track(guild * MAX_GUILD_TRACKS as u64 + id + 1, "song"),
+                );
+            }
+        }
+        assert!(!players.can_enqueue(GuildId::new(999), 1));
+        players.clear(GuildId::new(1));
+        assert!(players.can_enqueue(GuildId::new(999), MAX_GUILD_TRACKS));
     }
 
     #[test]
