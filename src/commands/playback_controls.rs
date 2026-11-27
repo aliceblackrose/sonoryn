@@ -131,6 +131,7 @@ async fn require_voice_channel(ctx: &Context<AppState>) -> Result<Option<(GuildI
             .await?;
         return Ok(None);
     };
+    ctx.defer_ephemeral().await?;
     Ok(Some((guild_id, channel_id)))
 }
 

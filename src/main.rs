@@ -249,16 +249,18 @@ async fn verify_runtime_dependencies() -> MainResult<()> {
 }
 
 async fn verify_runtime_dependency(binary: &str, args: &[&str]) -> MainResult<()> {
-    let output = Command::new(binary)
-        .args(args)
-        .output()
-        .await
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("required runtime dependency `{binary}` is not available on PATH: {error}"),
-            )
-        })?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Command::new(binary).args(args).kill_on_drop(true).output(),
+    )
+    .await
+    .map_err(|_| io::Error::other(format!("startup check for `{binary}` timed out")))?
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("required runtime dependency `{binary}` is not available on PATH: {error}"),
+        )
+    })?;
 
     if !output.status.success() {
         return Err(io::Error::other(format!(

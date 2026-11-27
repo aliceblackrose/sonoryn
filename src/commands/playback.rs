@@ -369,6 +369,7 @@ async fn run_simple_control(
         return Ok(());
     };
 
+    ctx.defer_ephemeral().await?;
     let message = match playback_control(ctx.data(), guild_id, channel_id, action).await {
         PlaybackControlResult::Accepted => accepted.to_owned(),
         PlaybackControlResult::NothingPlaying => idle.to_owned(),
@@ -403,6 +404,7 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
         return Ok(None);
     };
 
+    ctx.defer_ephemeral().await?;
     match playback_control(
         ctx.data(),
         guild_id,

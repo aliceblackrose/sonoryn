@@ -41,6 +41,7 @@ const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
 const OPUS_FRAME_DURATION: Duration = Duration::from_millis(20);
 const MAX_DECODER_RECOVERY_ATTEMPTS: u8 = 2;
+const DECODER_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct PendingJoin {
     request_id: u64,
@@ -640,6 +641,7 @@ struct ActivePlayback {
     paused: bool,
     speaking: bool,
     recovery_attempts: u8,
+    sent_audio: bool,
 }
 
 impl ActivePlayback {
@@ -671,6 +673,7 @@ impl ActivePlayback {
             paused,
             speaking: false,
             recovery_attempts: 0,
+            sent_audio: false,
         }
     }
 
@@ -690,6 +693,7 @@ enum PlaybackFailure {
     MediaResolution,
     DecoderStart,
     DecoderRead,
+    DecoderStalled,
 }
 
 enum DecoderEvent {
@@ -739,6 +743,18 @@ async fn run_voice_worker(
                     return;
                 }
             }
+        }
+        _ = sleep(JOIN_TIMEOUT) => {
+            let message = "Discord voice connection timed out.".to_owned();
+            let _ = response.send(VoiceJoinResult::Failed(message.clone()));
+            send_stopped(
+                &worker_events,
+                guild_id,
+                generation,
+                VoiceWorkerStopReason::ConnectFailed(message),
+            )
+            .await;
+            return;
         }
         command = commands.recv() => {
             if matches!(command, Some(VoiceWorkerCommand::Shutdown { preserve: false })) {
@@ -1082,6 +1098,7 @@ async fn run_voice_worker(
                     break VoiceWorkerStopReason::VoiceFailed(error.to_string());
                 }
                 playback.position = playback.position.saturating_add(OPUS_FRAME_DURATION);
+                playback.sent_audio = true;
             }
             VoiceWorkerInput::Decoder(terminal) => {
                 let Some(playback) = active.take() else {
@@ -1091,6 +1108,7 @@ async fn run_voice_worker(
                 let duration = playback.track.metadata.duration;
                 let position = playback.position;
                 let completed = matches!(&terminal, Some(DecoderEvent::Finished))
+                    && playback.sent_audio
                     && !ended_early(position, duration);
 
                 if playback.speaking
@@ -1112,6 +1130,9 @@ async fn run_voice_worker(
                         }
                         Some(DecoderEvent::Failed(PlaybackFailure::DecoderRead)) => {
                             "decoder read failed"
+                        }
+                        Some(DecoderEvent::Failed(PlaybackFailure::DecoderStalled)) => {
+                            "decoder stalled"
                         }
                         Some(DecoderEvent::Frame(_)) => unreachable!("frame handled above"),
                         None => "decoder exited without a terminal event",
@@ -1327,20 +1348,27 @@ async fn run_decoder(
     };
 
     loop {
-        match stream.next_frame().await {
-            Ok(Some(frame)) => {
+        match tokio::time::timeout(DECODER_STALL_TIMEOUT, stream.next_frame()).await {
+            Ok(Ok(Some(frame))) => {
                 if events.send(DecoderEvent::Frame(frame)).await.is_err() {
                     let _ = stream.shutdown().await;
                     return;
                 }
             }
-            Ok(None) => {
+            Ok(Ok(None)) => {
                 let _ = events.send(DecoderEvent::Finished).await;
                 return;
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 let _ = events
                     .send(DecoderEvent::Failed(PlaybackFailure::DecoderRead))
+                    .await;
+                return;
+            }
+            Err(_) => {
+                let _ = stream.shutdown().await;
+                let _ = events
+                    .send(DecoderEvent::Failed(PlaybackFailure::DecoderStalled))
                     .await;
                 return;
             }

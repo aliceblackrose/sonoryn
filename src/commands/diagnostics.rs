@@ -1,4 +1,4 @@
-use std::process::Output;
+use std::{process::Output, time::Duration};
 
 use gloam_commands::prelude::*;
 use gloamwire::model::UserId;
@@ -108,9 +108,15 @@ pub(crate) async fn help(ctx: Context<AppState>) -> Result<()> {
 }
 
 async fn tool_health(binary: &str, args: &[&str]) -> String {
-    let output = match Command::new(binary).args(args).output().await {
-        Ok(output) => output,
-        Err(error) => return format!("unavailable ({})", compact(&error.to_string())),
+    let output = match tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new(binary).args(args).kill_on_drop(true).output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return format!("unavailable ({})", compact(&error.to_string())),
+        Err(_) => return "unavailable (timed out)".to_owned(),
     };
 
     if !output.status.success() {

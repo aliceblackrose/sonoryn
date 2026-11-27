@@ -67,6 +67,7 @@ impl YtDlpResolver {
                 "--no-warnings",
                 "--skip-download",
                 "--no-playlist",
+                "--",
                 target.as_str(),
             ])
             .await?;
@@ -90,6 +91,7 @@ impl YtDlpResolver {
                 "--yes-playlist",
                 "--playlist-end",
                 limit_arg.as_str(),
+                "--",
                 target,
             ])
             .await?
@@ -101,6 +103,7 @@ impl YtDlpResolver {
                 "--yes-playlist",
                 "--playlist-end",
                 limit_arg.as_str(),
+                "--",
                 target,
             ])
             .await?
@@ -155,6 +158,7 @@ impl YtDlpResolver {
                 "--no-playlist",
                 "--format",
                 "bestaudio/best",
+                "--",
                 track.locator.as_str(),
             ])
             .await?;
@@ -295,7 +299,12 @@ fn resolution_target(input: &str) -> String {
 }
 
 fn is_http_url(input: &str) -> bool {
-    input.starts_with("https://") || input.starts_with("http://")
+    reqwest::Url::parse(input).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
 }
 
 fn is_search_target(input: &str) -> bool {
@@ -363,6 +372,9 @@ fn parse_resolved_value(
     fallback_url: Option<&str>,
 ) -> Result<ResolvedTrack, ResolveError> {
     let title = string_field(value, "title")?;
+    if title.trim().is_empty() {
+        return Err(ResolveError::MissingField { field: "title" });
+    }
     let extractor = ["extractor_key", "extractor", "ie_key"]
         .into_iter()
         .find_map(|field| value.get(field).and_then(Value::as_str))
@@ -391,8 +403,7 @@ fn parse_resolved_value(
     let duration = value
         .get("duration")
         .and_then(Value::as_f64)
-        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .map(Duration::from_secs_f64);
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
     let artwork_url = value
         .get("thumbnail")
         .and_then(Value::as_str)
@@ -528,6 +539,33 @@ mod tests {
             Some(Duration::from_millis(61_500))
         );
         assert_eq!(resolved.locator, "https://www.youtube.com/watch?v=abc");
+    }
+
+    #[test]
+    fn invalid_duration_metadata_cannot_panic_resolution() {
+        let request = TrackRequest::new("song").expect("request");
+        for duration in [1e100, -1.0] {
+            let track = parse_resolved_track(
+                json!({
+                    "title": "Song",
+                    "webpage_url": "https://example.test/song",
+                    "duration": duration
+                }),
+                &request,
+            )
+            .expect("track");
+            assert_eq!(track.metadata.duration, None);
+        }
+    }
+
+    #[test]
+    fn blank_title_is_not_a_playable_result() {
+        let request = TrackRequest::new("song").expect("request");
+        let result = parse_resolved_track(
+            json!({"title": "  ", "webpage_url": "https://example.test/song"}),
+            &request,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
