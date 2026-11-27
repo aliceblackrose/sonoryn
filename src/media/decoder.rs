@@ -175,6 +175,23 @@ impl FfmpegOpusDecoder {
             .arg("-loglevel")
             .arg("error");
 
+        // Reconnect transient HTTP failures, but never reconnect on a clean EOF.
+        // The voice worker refreshes signed URLs and seeks on premature EOF.
+        if media.url.starts_with("https://") || media.url.starts_with("http://") {
+            command
+                .arg("-rw_timeout")
+                .arg("15000000")
+                .arg("-reconnect")
+                .arg("1")
+                .arg("-reconnect_streamed")
+                .arg("1")
+                .arg("-reconnect_on_network_error")
+                .arg("1")
+                .arg("-reconnect_on_http_error")
+                .arg("5xx")
+                .arg("-reconnect_delay_max")
+                .arg("5");
+        }
         if let Some(headers) = render_http_headers(&media.http_headers) {
             command.arg("-headers").arg(headers);
         }
