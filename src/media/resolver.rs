@@ -38,6 +38,9 @@ pub enum ResolveError {
 
     #[error("resolver returned an invalid media URL")]
     InvalidMediaUrl,
+
+    #[error("media server returned HTTP {0}")]
+    MediaHttpStatus(u16),
 }
 
 /// Resolves user submissions into durable queue metadata and refreshes
