@@ -89,12 +89,33 @@ pub(crate) async fn leave(ctx: Context<AppState>) -> Result<()> {
         return Ok(());
     };
 
+    let Some(user_id) = invoking_user_id(ctx.interaction()) else {
+        ctx.reply_status("I could not determine the invoking user.")
+            .await?;
+        return Ok(());
+    };
+    let channel_id = {
+        let cache = ctx.data().cache.read().await;
+        cache
+            .voice_state(guild_id, user_id)
+            .and_then(|state| state.channel_id)
+    };
+    let Some(channel_id) = channel_id else {
+        ctx.reply_status("Join my voice channel before disconnecting me.")
+            .await?;
+        return Ok(());
+    };
+
     ctx.defer_ephemeral().await?;
     let (response, result) = oneshot::channel();
     if ctx
         .data()
         .gateway_control
-        .send(GatewayControl::LeaveVoice { guild_id, response })
+        .send(GatewayControl::LeaveVoice {
+            guild_id,
+            channel_id,
+            response,
+        })
         .await
         .is_err()
     {

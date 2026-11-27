@@ -9,6 +9,7 @@ pub(crate) enum GatewayControl {
     },
     LeaveVoice {
         guild_id: GuildId,
+        channel_id: ChannelId,
         response: oneshot::Sender<VoiceLeaveResult>,
     },
     Playback {

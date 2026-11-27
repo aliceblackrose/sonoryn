@@ -1,4 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use gloamwire::{
     gateway::{DispatchEvent, GatewayConnection, UpdateVoiceState},
@@ -45,6 +52,8 @@ struct VoiceWorkerHandle {
     generation: u64,
     channel_id: ChannelId,
     commands: mpsc::Sender<VoiceWorkerCommand>,
+    ready: Arc<AtomicBool>,
+    leaving: bool,
 }
 
 struct VoiceWorkerServices {
@@ -55,6 +64,7 @@ struct VoiceWorkerServices {
     decoder: FfmpegOpusDecoder,
     checkpoints: Checkpoints,
     resume: Option<VoiceCheckpoint>,
+    ready: Arc<AtomicBool>,
 }
 
 enum VoiceWorkerCommand {
@@ -141,8 +151,13 @@ impl VoiceManager {
                 self.join_voice(guild_id, channel_id, response, gateway, bot_user_id)
                     .await;
             }
-            GatewayControl::LeaveVoice { guild_id, response } => {
-                self.leave_voice(guild_id, response, gateway).await;
+            GatewayControl::LeaveVoice {
+                guild_id,
+                channel_id,
+                response,
+            } => {
+                self.leave_voice(guild_id, channel_id, response, gateway)
+                    .await;
             }
             GatewayControl::Playback {
                 guild_id,
@@ -241,7 +256,13 @@ impl VoiceManager {
                     return;
                 }
 
-                self.workers.remove(&guild_id);
+                let leaving = self
+                    .workers
+                    .remove(&guild_id)
+                    .is_some_and(|worker| worker.leaving);
+                if leaving {
+                    self.players.write().await.clear(guild_id);
+                }
                 match reason {
                     VoiceWorkerStopReason::Requested => {
                         info!(guild_id = guild_id.get(), "voice worker stopped");
@@ -305,18 +326,25 @@ impl VoiceManager {
         }
 
         let workers = self.workers.drain().collect::<Vec<_>>();
-        for (guild_id, worker) in workers {
+        for (_, worker) in &workers {
             let _ = worker
                 .commands
-                .send(VoiceWorkerCommand::Shutdown { preserve: true })
+                .send(VoiceWorkerCommand::Shutdown {
+                    preserve: !worker.leaving,
+                })
                 .await;
-            disconnect_gateway_voice(gateway, guild_id).await;
         }
 
         while let Some(result) = self.tasks.join_next().await {
             if let Err(error) = result {
                 error!(error = %error, "voice worker task failed during shutdown");
             }
+        }
+        for (guild_id, worker) in workers {
+            if worker.leaving {
+                self.players.write().await.clear(guild_id);
+            }
+            disconnect_gateway_voice(gateway, guild_id).await;
         }
     }
 
@@ -344,9 +372,18 @@ impl VoiceManager {
         bot_user_id: Option<UserId>,
     ) {
         if let Some(worker) = self.workers.get(&guild_id) {
-            let _ = response.send(VoiceJoinResult::AlreadyConnected {
-                channel_id: worker.channel_id,
-            });
+            let result = if worker.leaving {
+                VoiceJoinResult::Failed("Voice is disconnecting; try again shortly.".to_owned())
+            } else if worker.ready.load(Ordering::Acquire) {
+                VoiceJoinResult::AlreadyConnected {
+                    channel_id: worker.channel_id,
+                }
+            } else {
+                VoiceJoinResult::InProgress {
+                    channel_id: worker.channel_id,
+                }
+            };
+            let _ = response.send(result);
             return;
         }
         if let Some(pending) = self.pending.get(&guild_id) {
@@ -403,10 +440,27 @@ impl VoiceManager {
     async fn leave_voice(
         &mut self,
         guild_id: GuildId,
+        channel_id: ChannelId,
         response: oneshot::Sender<VoiceLeaveResult>,
         gateway: &mut GatewayConnection,
     ) {
-        self.checkpoints.write().await.remove(&guild_id);
+        let expected = self
+            .workers
+            .get(&guild_id)
+            .map(|worker| worker.channel_id)
+            .or_else(|| self.pending.get(&guild_id).map(|pending| pending.channel_id));
+        let mut checkpoints = self.checkpoints.write().await;
+        let expected = expected.or_else(|| {
+            checkpoints.get(&guild_id).map(|entry| entry.checkpoint.channel_id)
+        });
+        if expected.is_some_and(|expected| expected != channel_id) {
+            let _ = response.send(VoiceLeaveResult::Failed(
+                "Join my voice channel before disconnecting me.".to_owned(),
+            ));
+            return;
+        }
+        checkpoints.remove(&guild_id);
+        drop(checkpoints);
         if let Some(pending) = self.pending.remove(&guild_id) {
             let channel_id = pending.channel_id;
             let _ = pending.response.send(VoiceJoinResult::Cancelled);
@@ -427,12 +481,13 @@ impl VoiceManager {
             return;
         }
 
-        let Some(worker) = self.workers.remove(&guild_id) else {
+        let Some(worker) = self.workers.get_mut(&guild_id) else {
             self.players.write().await.clear(guild_id);
             let _ = response.send(VoiceLeaveResult::NotConnected);
             return;
         };
 
+        worker.leaving = true;
         self.players.write().await.clear(guild_id);
         let _ = worker
             .commands
@@ -466,6 +521,10 @@ impl VoiceManager {
             let _ = response.send(PlaybackControlResult::NotConnected);
             return;
         };
+        if worker.leaving || !worker.ready.load(Ordering::Acquire) {
+            let _ = response.send(PlaybackControlResult::NotConnected);
+            return;
+        }
         if worker.channel_id != channel_id {
             let _ = response.send(PlaybackControlResult::WrongVoiceChannel {
                 channel_id: worker.channel_id,
@@ -474,13 +533,11 @@ impl VoiceManager {
         }
         let commands = worker.commands.clone();
 
-        if let Err(error) = commands
-            .send(VoiceWorkerCommand::Playback { action, response })
-            .await
-            && let VoiceWorkerCommand::Playback { response, .. } = error.0
+        if let Err(error) = commands.try_send(VoiceWorkerCommand::Playback { action, response })
+            && let VoiceWorkerCommand::Playback { response, .. } = error.into_inner()
         {
             let _ = response.send(PlaybackControlResult::Failed(
-                "The guild voice worker is unavailable.".to_owned(),
+                "The guild voice worker is busy or unavailable; try again.".to_owned(),
             ));
         }
     }
@@ -493,12 +550,15 @@ impl VoiceManager {
     ) {
         let generation = self.next_id();
         let (commands, receiver) = mpsc::channel(VOICE_COMMAND_CAPACITY);
+        let ready = Arc::new(AtomicBool::new(false));
         self.workers.insert(
             guild_id,
             VoiceWorkerHandle {
                 generation,
                 channel_id: pending.channel_id,
                 commands,
+                ready: ready.clone(),
+                leaving: false,
             },
         );
 
@@ -524,6 +584,7 @@ impl VoiceManager {
             decoder: self.decoder.clone(),
             checkpoints: self.checkpoints.clone(),
             resume,
+            ready,
         };
         self.tasks.spawn(run_voice_worker(
             guild_id,
@@ -609,6 +670,12 @@ impl ActivePlayback {
     }
 }
 
+impl Drop for ActivePlayback {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PlaybackFailure {
     MediaResolution,
@@ -639,6 +706,7 @@ async fn run_voice_worker(
         decoder,
         checkpoints,
         resume,
+        ready,
     } = services;
     let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
     tokio::pin!(connect);
@@ -679,6 +747,7 @@ async fn run_voice_worker(
         }
     };
 
+    ready.store(true, Ordering::Release);
     let _ = response.send(VoiceJoinResult::Joined { channel_id });
     info!(
         guild_id = guild_id.get(),
@@ -828,7 +897,7 @@ async fn run_voice_worker(
                                 let position = players.enqueue(guild_id, current);
                                 let _ = players.move_queued(guild_id, position - 1, 0);
                             }
-                            let position = players.enqueue(guild_id, previous);
+                            let position = players.enqueue_replay(guild_id, previous);
                             let _ = players.move_queued(guild_id, position - 1, 0);
                         }
                         let _ = history.write().await.pop_latest(guild_id);
