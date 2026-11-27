@@ -1435,9 +1435,15 @@ async fn run_decoder(
             }
             Ok(Err(error)) => {
                 warn!(%error, "audio decoder read failed");
-                let _ = events
-                    .send(DecoderEvent::Failed(PlaybackFailure::DecoderRead))
-                    .await;
+                let failure = if matches!(
+                    error,
+                    sonoryn::media::DecodeError::MediaHttpStatus(401 | 403 | 429)
+                ) {
+                    PlaybackFailure::MediaRefused
+                } else {
+                    PlaybackFailure::DecoderRead
+                };
+                let _ = events.send(DecoderEvent::Failed(failure)).await;
                 return;
             }
             Err(_) => {
