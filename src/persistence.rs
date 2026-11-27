@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -23,7 +23,7 @@ type DbResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 pub(crate) type Checkpoints = Arc<RwLock<HashMap<GuildId, CheckpointEntry>>>;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct VoiceCheckpoint {
     pub(crate) channel_id: ChannelId,
     pub(crate) track_id: Option<TrackId>,
@@ -59,32 +59,41 @@ pub(crate) struct GuildState {
     voice: Option<VoiceCheckpoint>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Database {
-    path: PathBuf,
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub(crate) async fn open() -> DbResult<(Self, Vec<GuildState>)> {
         let path = database_path()?;
-        let saved = tokio::task::spawn_blocking({
+        let (connection, saved) = tokio::task::spawn_blocking({
             let path = path.clone();
-            move || -> DbResult<Vec<GuildState>> {
+            move || -> DbResult<(Connection, Vec<GuildState>)> {
                 prepare_path(&path)?;
                 let connection = connect(&path)?;
                 initialize(&connection)?;
-                load(&connection)
+                let saved = load(&connection)?;
+                Ok((connection, saved))
             }
         })
         .await??;
         tracing::info!(path = %path.display(), guilds = saved.len(), "opened playback database");
-        Ok((Self { path }, saved))
+        Ok((
+            Self {
+                connection: Arc::new(Mutex::new(connection)),
+            },
+            saved,
+        ))
     }
 
     pub(crate) async fn save(&self, state: &AppState, checkpoints: &Checkpoints) -> DbResult<()> {
         let saved = snapshot(state, checkpoints).await;
-        let path = self.path.clone();
+        let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || -> DbResult<()> {
-            let mut connection = connect(&path)?;
+            let mut connection = connection
+                .lock()
+                .map_err(|_| io::Error::other("database lock poisoned"))?;
             write(&mut connection, &saved)
         })
         .await?
@@ -208,16 +217,38 @@ fn load(connection: &Connection) -> DbResult<Vec<GuildState>> {
 }
 
 fn write(connection: &mut Connection, saved: &[GuildState]) -> DbResult<()> {
-    let transaction = connection.transaction()?;
-    transaction.execute("DELETE FROM guild_state", [])?;
-    for guild in saved {
-        transaction.execute(
-            "INSERT INTO guild_state (guild_id, snapshot) VALUES (?1, ?2)",
-            params![
+    let desired: HashMap<String, String> = saved
+        .iter()
+        .map(|guild| {
+            Ok((
                 guild.guild_id.get().to_string(),
-                serde_json::to_string(guild)?
-            ],
-        )?;
+                serde_json::to_string(guild)?,
+            ))
+        })
+        .collect::<Result<_, serde_json::Error>>()?;
+    let existing: HashMap<String, String> = {
+        let mut statement = connection.prepare("SELECT guild_id, snapshot FROM guild_state")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if existing == desired {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    for (guild_id, snapshot) in &desired {
+        if existing.get(guild_id) != Some(snapshot) {
+            transaction.execute(
+                "INSERT INTO guild_state (guild_id, snapshot) VALUES (?1, ?2)
+                 ON CONFLICT(guild_id) DO UPDATE SET snapshot = excluded.snapshot",
+                params![guild_id, snapshot],
+            )?;
+        }
+    }
+    for guild_id in existing.keys() {
+        if !desired.contains_key(guild_id) {
+            transaction.execute("DELETE FROM guild_state WHERE guild_id = ?1", [guild_id])?;
+        }
     }
     transaction.commit()?;
     Ok(())
@@ -269,7 +300,10 @@ mod tests {
                 volume_percent: 60,
             }),
         };
-        write(&mut connection, &[saved]).expect("save");
+        write(&mut connection, std::slice::from_ref(&saved)).expect("save");
+        let changes = connection.total_changes();
+        write(&mut connection, &[saved]).expect("unchanged save");
+        assert_eq!(connection.total_changes(), changes);
         let loaded = load(&connection).expect("load").pop().expect("guild");
         assert_eq!(loaded.guild_id, guild_id);
         assert_eq!(loaded.player.now_playing, Some(track(1)));

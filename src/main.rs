@@ -13,7 +13,11 @@ use gloamwire::{
     gateway::{GatewayConfig, GatewayConnection, GatewayEvent, GatewayIntents, TypedDispatchEvent},
     model::{GuildId, UserId},
 };
-use tokio::{process::Command, sync::mpsc, task::JoinSet};
+use tokio::{
+    process::Command,
+    sync::{mpsc, oneshot},
+    task::JoinSet,
+};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -58,103 +62,112 @@ async fn main() -> MainResult<()> {
     let mut synchronized = registration == Registration::None;
     let mut bot_user_id: Option<UserId> = None;
 
-    let mut checkpoint_timer = tokio::time::interval(std::time::Duration::from_secs(2));
-    checkpoint_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (stop_saver, saver) = oneshot::channel();
+    let saver_task = tokio::spawn(save_periodically(
+        database.clone(),
+        state.clone(),
+        checkpoints.clone(),
+        saver,
+    ));
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
     info!("Sonoryn Gateway connected");
 
-    loop {
-        tokio::select! {
-            signal = &mut shutdown => {
-                signal?;
-                info!("shutdown signal received");
-                break;
-            }
-            _ = checkpoint_timer.tick() => {
-                if let Err(error) = database.save(&state, &checkpoints).await {
-                    warn!(%error, "failed to save playback checkpoint");
+    let gateway_result: MainResult<()> = async {
+        loop {
+            tokio::select! {
+                signal = &mut shutdown => {
+                    signal?;
+                    info!("shutdown signal received");
+                    break;
                 }
-            }
-            control = gateway_controls.recv() => {
-                if let Some(control) = control {
-                    voice_manager
-                        .handle_control(control, &mut gateway, bot_user_id)
-                        .await;
-                }
-            }
-            worker_event = voice_events.recv() => {
-                if let Some(worker_event) = worker_event {
-                    voice_manager
-                        .handle_worker_event(worker_event, &mut gateway)
-                        .await;
-                }
-            }
-            event = gateway.next_event() => {
-                let event = event?;
-
-                if let GatewayEvent::Dispatch(dispatch) = &event {
-                    let typed = {
-                        let mut cache = state.cache.write().await;
-                        cache.update_dispatch(dispatch)?
-                    };
-
-                    voice_manager.handle_dispatch(dispatch, &mut gateway).await;
-
-                    if let TypedDispatchEvent::Ready(ready) = &typed {
-                        bot_user_id = Some(ready.user.id);
-                        if !synchronized {
-                            framework
-                                .synchronize_commands(&rest, ready.application.id)
-                                .await?;
-                            synchronized = true;
-                            info!("Discord application commands synchronized");
-                        }
-                    }
-                    if let TypedDispatchEvent::GuildCreate(guild) = &typed
-                        && let Some(bot_id) = bot_user_id
-                    {
-                        let channel = checkpoints
-                            .read()
-                            .await
-                            .get(&guild.id)
-                            .map(|entry| entry.checkpoint.channel_id);
-                        if let Some(channel_id) = channel
-                            && guild.voice_states.iter().any(|voice| {
-                                voice.channel_id == Some(channel_id) && voice.user_id != bot_id
-                            })
-                        {
-                            voice_manager
-                                .restore_voice(guild.id, channel_id, &mut gateway, bot_id)
-                                .await;
-                        }
+                control = gateway_controls.recv() => {
+                    if let Some(control) = control {
+                        voice_manager
+                            .handle_control(control, &mut gateway, bot_user_id)
+                            .await;
                     }
                 }
+                worker_event = voice_events.recv() => {
+                    if let Some(worker_event) = worker_event {
+                        voice_manager
+                            .handle_worker_event(worker_event, &mut gateway)
+                            .await;
+                    }
+                }
+                event = gateway.next_event() => {
+                    let event = event?;
 
-                match framework.dispatch(&rest, &event)? {
-                    DispatchOutcome::Spawned(task) => {
-                        let command_name = task.command_name();
-                        command_tasks.spawn(async move {
-                            if let Err(error) = task.join().await {
-                                error!(command = command_name, error = %error, "command task failed");
+                    if let GatewayEvent::Dispatch(dispatch) = &event {
+                        let typed = {
+                            let mut cache = state.cache.write().await;
+                            cache.update_dispatch(dispatch)?
+                        };
+
+                        voice_manager.handle_dispatch(dispatch, &mut gateway).await;
+
+                        if let TypedDispatchEvent::Ready(ready) = &typed {
+                            bot_user_id = Some(ready.user.id);
+                            if !synchronized {
+                                framework
+                                    .synchronize_commands(&rest, ready.application.id)
+                                    .await?;
+                                synchronized = true;
+                                info!("Discord application commands synchronized");
                             }
-                        });
+                        }
+                        if let TypedDispatchEvent::GuildCreate(guild) = &typed
+                            && let Some(bot_id) = bot_user_id
+                        {
+                            let channel = checkpoints
+                                .read()
+                                .await
+                                .get(&guild.id)
+                                .filter(|entry| entry.generation == 0)
+                                .map(|entry| entry.checkpoint.channel_id);
+                            if let Some(channel_id) = channel
+                                && guild.voice_states.iter().any(|voice| {
+                                    voice.channel_id == Some(channel_id) && voice.user_id != bot_id
+                                })
+                            {
+                                voice_manager
+                                    .restore_voice(guild.id, channel_id, &mut gateway, bot_id)
+                                    .await;
+                            }
+                        }
                     }
-                    DispatchOutcome::AtCapacity { name } => {
-                        warn!(command = name, "command rejected at capacity");
-                    }
-                    DispatchOutcome::Unregistered { name } => {
-                        warn!(command = %name, "unregistered Discord command received");
-                    }
-                    DispatchOutcome::Ignored => {}
-                }
 
-                reap_command_tasks(&mut command_tasks);
+                    match framework.dispatch(&rest, &event)? {
+                        DispatchOutcome::Spawned(task) => {
+                            let command_name = task.command_name();
+                            command_tasks.spawn(async move {
+                                if let Err(error) = task.join().await {
+                                    error!(command = command_name, error = %error, "command task failed");
+                                }
+                            });
+                        }
+                        DispatchOutcome::AtCapacity { name } => {
+                            warn!(command = name, "command rejected at capacity");
+                        }
+                        DispatchOutcome::Unregistered { name } => {
+                            warn!(command = %name, "unregistered Discord command received");
+                        }
+                        DispatchOutcome::Ignored => {}
+                    }
+
+                    reap_command_tasks(&mut command_tasks);
+                }
             }
         }
+        Ok(())
     }
+    .await;
 
+    let _ = stop_saver.send(());
+    if let Err(error) = saver_task.await {
+        error!(%error, "checkpoint task failed");
+    }
     gateway_controls.close();
     while let Ok(control) = gateway_controls.try_recv() {
         VoiceManager::reject_control(control);
@@ -168,9 +181,33 @@ async fn main() -> MainResult<()> {
         }
     }
 
-    database.save(&state, &checkpoints).await?;
-    gateway.shutdown().await?;
+    let saved = database.save(&state, &checkpoints).await;
+    let disconnected = gateway.shutdown().await;
+    saved?;
+    gateway_result?;
+    disconnected?;
     Ok(())
+}
+
+async fn save_periodically(
+    database: persistence::Database,
+    state: AppState,
+    checkpoints: persistence::Checkpoints,
+    mut stop: oneshot::Receiver<()>,
+) {
+    let mut timer = tokio::time::interval(std::time::Duration::from_secs(2));
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stop => break,
+            _ = timer.tick() => {
+                if let Err(error) = database.save(&state, &checkpoints).await {
+                    warn!(%error, "failed to save playback checkpoint");
+                }
+            }
+        }
+    }
 }
 
 async fn shutdown_signal() -> io::Result<()> {

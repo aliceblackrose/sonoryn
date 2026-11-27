@@ -115,9 +115,17 @@ impl PlayerManager {
 
     /// Appends a track to the guild FIFO and returns its one-based queue position.
     pub fn enqueue(&mut self, guild_id: GuildId, track: Track) -> usize {
+        self.reserve_track_id(track.id);
         let player = self.players.entry(guild_id).or_default();
         player.queue.push_back(track);
         player.queue.len()
+    }
+
+    /// Replays a history entry with a new queue identity.
+    pub fn enqueue_replay(&mut self, guild_id: GuildId, mut track: Track) -> usize {
+        self.reserve_track_id(track.id);
+        track.id = self.allocate_track_id();
+        self.enqueue(guild_id, track)
     }
 
     /// Removes one queued track by zero-based index without touching the active track.
@@ -349,6 +357,18 @@ mod tests {
         assert_eq!(second.id, TrackId::new(2));
         assert_eq!(first_position, 1);
         assert_eq!(second_position, 1);
+    }
+
+    #[test]
+    fn replaying_history_does_not_duplicate_a_queued_track_id() {
+        let guild_id = GuildId::new(42);
+        let mut players = PlayerManager::new();
+        let previous = track(5, "song");
+        players.enqueue(guild_id, previous.clone());
+        players.enqueue_replay(guild_id, previous);
+        let queue = players.snapshot(guild_id).queue;
+        assert_eq!(queue[0].id, TrackId::new(5));
+        assert_eq!(queue[1].id, TrackId::new(6));
     }
 
     #[test]
