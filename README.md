@@ -101,7 +101,7 @@ RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
 cargo run
 ```
 
-RustyPipe's upstream extractor may fail on some YouTube content; live media access is not guaranteed. Only resolve and play content you are authorized to use.
+RustyPipe is pinned to upstream revision `71712e4` to propagate visitor-data extraction failures rather than panic. If YouTube does not provide visitor session data or denies requests, Sonoryn reports a recoverable source error; live media access is not guaranteed. Only resolve and play content you are authorized to use.
 
 Then join a normal voice channel and use, for example:
 
