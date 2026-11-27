@@ -44,10 +44,8 @@ async fn main() -> MainResult<()> {
     let mut gateway = GatewayConnection::connect(config).await?;
 
     let (gateway_control, mut gateway_controls) = mpsc::channel(GATEWAY_CONTROL_CAPACITY);
-    let mut state = AppState::new(gateway_control);
+    let state = AppState::new(gateway_control);
     if env::var("SONORYN_RESOLVER_IPV4_ONLY").as_deref() == Ok("1") {
-        let resolver = sonoryn::media::RustyPipeResolver::ipv4_only()?;
-        state.resolver = std::sync::Arc::new(resolver);
         info!("media resolver configured for IPv4 only");
     }
     let (database, saved) = persistence::Database::open().await?;

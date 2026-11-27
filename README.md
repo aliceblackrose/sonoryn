@@ -8,7 +8,7 @@ The project is intentionally protocol-first. Sonoryn does not introduce a second
 
 **Working-prototype stage.**
 
-The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves YouTube URLs/free-text searches with RustyPipe, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path. Connected guild voice workers automatically disconnect after five minutes with no active track and an empty queue; paused playback remains active and is not considered idle.
+The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves YouTube URLs/free-text searches with Strawcore, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path. Connected guild voice workers automatically disconnect after five minutes with no active track and an empty queue; paused playback remains active and is not considered idle.
 
 Implemented prototype commands:
 
@@ -59,13 +59,13 @@ The interactive UI uses Gloamwire's message-button API from [PR #47](https://git
 ```text
 /play <query>
     │
-    ├─ TrackResolver (RustyPipe metadata)
+    ├─ TrackResolver (Strawcore metadata)
     │      └─ durable Track metadata / public locator
     │
     ├─ per-guild PlayerManager FIFO
     │
     └─ Voice worker
-           ├─ RustyPipe direct-media refresh
+           ├─ Strawcore direct-media refresh
            ├─ bounded FFmpeg decoder task
            ├─ 48 kHz stereo / 20 ms Opus
            ├─ VoiceFramePacer
@@ -83,7 +83,7 @@ Install:
 - FFmpeg with `libopus` support available as `ffmpeg` on `PATH`;
 - a Discord application/bot with access to the target guild and permission to connect/speak in the target voice channel.
 
-Sonoryn performs a startup preflight for `ffmpeg -version`. RustyPipe is linked into the application; no separate media extractor executable is required. Native resolution supports YouTube watch, short, live, playlist and YouTube Music watch URLs, as well as free-text search. Non-YouTube sources are currently unsupported.
+Sonoryn performs a startup preflight for `ffmpeg -version`. Strawcore is linked into the application; no separate media extractor executable is required. Native resolution supports YouTube watch, short, live and YouTube Music watch URLs, as well as free-text search. Non-YouTube sources are currently unsupported.
 
 Configure:
 
@@ -101,7 +101,7 @@ RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
 cargo run
 ```
 
-RustyPipe is pinned to upstream revision `71712e4` to propagate visitor-data extraction failures rather than panic. If YouTube does not provide visitor session data or denies requests, Sonoryn reports a recoverable source error; live media access is not guaranteed. Only resolve and play content you are authorized to use.
+Strawcore is pinned to upstream revision `b231c84d9a`. Its synchronous extraction API runs on a bounded blocking worker pool. YouTube playlist expansion is currently unsupported; single-video URLs and searches remain supported. Only resolve and play content you are authorized to use. Access to upstream media is not guaranteed.
 
 Then join a normal voice channel and use, for example:
 
@@ -127,7 +127,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for runtime ownership and dat
 
 ## License
 
-License selection is pending. RustyPipe 0.11.4 is GPL-3.0; review the resulting combined-work distribution obligations before distributing a Sonoryn binary. This migration does not select a license for Sonoryn.
+License selection is pending. Strawcore 0.1 is GPL-3.0-or-later; review the resulting combined-work distribution obligations before distributing a Sonoryn binary. This migration does not select a license for Sonoryn.
 
 ## Persistent playback and restart recovery
 
@@ -145,4 +145,4 @@ This migration is experimental pending native dependency review, CI, and live Di
 
 ### Resolver network configuration
 
-By default, the HTTP resolver uses the system's normal address-family selection. If your hosting provider has broken or incorrectly geolocated IPv6 connectivity, set `SONORYN_RESOLVER_IPV4_ONLY=1` in the existing Sonoryn environment file and restart. This restricts RustyPipe's HTTP client and FFmpeg HTTP input connections to IPv4; it does not alter host networking or Discord transport. The FFmpeg build must support the TCP protocol's `local_addr` option (`ffmpeg -h protocol=tcp`). Contact your provider about incorrect IP geolocation. This setting does not guarantee media availability.
+By default, the HTTP resolver uses the system's normal address-family selection. If your hosting provider has broken or incorrectly geolocated IPv6 connectivity, set `SONORYN_RESOLVER_IPV4_ONLY=1` in the existing Sonoryn environment file and restart. This restricts Strawcore's HTTP client and FFmpeg HTTP input connections to IPv4; it does not alter host networking or Discord transport. The FFmpeg build must support the TCP protocol's `local_addr` option (`ffmpeg -h protocol=tcp`). Contact your provider about incorrect IP geolocation. This setting does not guarantee media availability.

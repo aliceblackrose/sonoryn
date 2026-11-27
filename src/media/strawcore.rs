@@ -1,86 +1,132 @@
-//! Native YouTube resolution. The queue stores public watch URLs, not CDN URLs.
-use std::{future::Future, net::IpAddr, time::Duration};
-
-use rustypipe::{
-    client::RustyPipe,
-    error::{Error as RustyPipeError, ExtractionError},
-    model::{Thumbnail, VideoItem},
+//! Native YouTube resolution using Strawcore's synchronous extraction API.
+use std::{
+    future::Future,
+    net::IpAddr,
+    sync::{Arc, OnceLock},
+    time::Duration,
 };
-use tokio::time::timeout;
+
+use strawcore_core::{
+    NewPipe,
+    downloader::ReqwestDownloader,
+    image::Image,
+    youtube::{linkhandler::search::SearchFilter, search_extractor, stream_extractor},
+};
+use tokio::{sync::Semaphore, time::timeout};
 
 use super::{
     MAX_PLAYLIST_ITEMS, PlayableMedia, ResolveError, ResolveFuture, ResolvedTrack, Track,
     TrackMetadata, TrackRequest, TrackResolver, TrackSource,
 };
 
-const BACKEND: &str = "rustypipe";
+const BACKEND: &str = "strawcore";
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Native YouTube resolver.
-#[derive(Default)]
-pub struct RustyPipeResolver {
-    client: RustyPipe,
+// The library's downloader is process-global. Build it on a blocking thread
+// exactly once; the service's address-family setting is fixed at startup.
+static INITIALIZED: OnceLock<Result<(), ()>> = OnceLock::new();
+static EXTRACTION_SLOTS: Semaphore = Semaphore::const_new(4);
+
+pub struct StrawcoreResolver {
     ipv4_only: bool,
 }
 
-impl RustyPipeResolver {
+impl Default for StrawcoreResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StrawcoreResolver {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Restrict the resolver HTTP client to the local IPv4 address family.
-    pub fn ipv4_only() -> Result<Self, ResolveError> {
-        let address = IpAddr::from([0, 0, 0, 0]);
-        let builder = reqwest12::Client::builder().local_address(address);
-        let client = RustyPipe::builder()
-            .build_with_client(builder)
-            .map_err(upstream_error)?;
-        Ok(Self {
-            client,
-            ipv4_only: true,
-        })
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
-        let result = self
-            .client
-            .query()
-            .search::<VideoItem, _>(query)
-            .await
-            .map_err(upstream_error)?;
-        collect_items(result.items.items, limit)
-    }
-
-    async fn playlist(&self, id: &str, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
-        let query = self.client.query();
-        let mut playlist = query.playlist(id).await.map_err(upstream_error)?;
-        if playlist.videos.items.len() < limit {
-            // Keep the first page even if a continuation request fails.
-            let _ = playlist.videos.extend_limit(query, limit).await;
+        Self {
+            ipv4_only: std::env::var("SONORYN_RESOLVER_IPV4_ONLY").as_deref() == Ok("1"),
         }
-        collect_items(playlist.videos.items, limit)
     }
 
-    async fn video(&self, id: &str) -> Result<ResolvedTrack, ResolveError> {
-        let player = self
-            .client
-            .query()
-            .player(id)
+    async fn run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce() -> Result<T, ResolveError> + Send + 'static,
+    ) -> Result<T, ResolveError> {
+        let permit = EXTRACTION_SLOTS
+            .acquire()
             .await
-            .map_err(upstream_error)?;
-        let details = player.details;
-        let title = details
-            .name
-            .filter(|title| !title.trim().is_empty())
-            .ok_or(ResolveError::MissingField { field: "title" })?;
-        Ok(resolved_track(
-            &details.id,
-            title,
-            details.channel_name,
-            (details.duration > 0).then_some(details.duration),
-            artwork(&details.thumbnail),
-        ))
+            .map_err(|_| backend_failed("extractor worker unavailable"))?;
+        let ipv4_only = self.ipv4_only;
+        tokio::task::spawn_blocking(move || {
+            // The permit stays with the worker even if the caller times out.
+            let _permit = permit;
+            INITIALIZED
+                .get_or_init(|| {
+                    let mut builder = reqwest12::blocking::Client::builder()
+                        .timeout(HTTP_TIMEOUT)
+                        .redirect(reqwest12::redirect::Policy::limited(5))
+                        .gzip(true);
+                    if ipv4_only {
+                        builder = builder.local_address(IpAddr::from([0, 0, 0, 0]));
+                    }
+                    let client = builder.build().map_err(|_| ())?;
+                    NewPipe::init(Arc::new(ReqwestDownloader::with_client(client)));
+                    Ok(())
+                })
+                .as_ref()
+                .map_err(|_| backend_failed("could not initialize extractor HTTP client"))?;
+            operation()
+        })
+        .await
+        .map_err(|_| backend_failed("extractor worker failed"))?
+    }
+
+    async fn search(&self, query: String, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
+        self.run(move || {
+            let result = search_extractor::search(&query, SearchFilter::Videos)
+                .map_err(|_| backend_failed("YouTube search failed"))?;
+            let tracks: Vec<_> = result
+                .videos
+                .into_iter()
+                .filter_map(|item| {
+                    let Target::Video(id) = target(&item.url, false).ok()? else {
+                        return None;
+                    };
+                    if item.name.trim().is_empty() {
+                        return None;
+                    }
+                    Some(resolved_track(
+                        &id,
+                        item.name,
+                        nonempty(item.uploader_name),
+                        duration(item.duration_seconds),
+                        artwork(&item.thumbnails),
+                    ))
+                })
+                .take(limit)
+                .collect();
+            if tracks.is_empty() {
+                return Err(ResolveError::NoResults);
+            }
+            Ok(tracks)
+        })
+        .await
+    }
+
+    async fn video(&self, id: String) -> Result<ResolvedTrack, ResolveError> {
+        self.run(move || {
+            let info = stream_extractor::stream_metadata(&id)
+                .map_err(|_| backend_failed("YouTube metadata request failed"))?;
+            if info.video_id != id || info.name.trim().is_empty() {
+                return Err(ResolveError::MissingField { field: "title" });
+            }
+            Ok(resolved_track(
+                &id,
+                info.name,
+                nonempty(info.uploader_name),
+                duration(info.duration_seconds),
+                artwork(&info.thumbnails),
+            ))
+        })
+        .await
     }
 
     async fn resolve_many(
@@ -91,9 +137,11 @@ impl RustyPipeResolver {
     ) -> Result<Vec<ResolvedTrack>, ResolveError> {
         let limit = limit.clamp(1, MAX_PLAYLIST_ITEMS);
         match target(request.input(), prefer_playlist)? {
-            Target::Search(query) => self.search(&query, limit).await,
-            Target::Playlist(id) => self.playlist(&id, limit).await,
-            Target::Video(id) => self.video(&id).await.map(|track| vec![track]),
+            Target::Search(query) => self.search(query, limit).await,
+            Target::Video(id) => self.video(id).await.map(|track| vec![track]),
+            Target::Playlist(_) => Err(backend_failed(
+                "YouTube playlist expansion is not supported by this extractor",
+            )),
         }
     }
 
@@ -101,38 +149,38 @@ impl RustyPipeResolver {
         let Target::Video(id) = target(&track.locator, false)? else {
             return Err(ResolveError::InvalidMediaUrl);
         };
-        let query = self.client.query();
-        let player = query.player(id).await.map_err(upstream_error)?;
-        // Do not handle encrypted or DRM-protected media.
-        if player.drm.is_some() {
-            return Err(ResolveError::UnsupportedSource);
-        }
-        let audio_url = player
-            .audio_streams
-            .iter()
-            .filter(|stream| stream.drm_track_type.is_none() && stream.drm_systems.is_empty())
-            .filter(|stream| valid_media_url(&stream.url))
-            .max_by_key(|stream| stream.bitrate)
-            .map(|stream| stream.url.as_str());
-        let url = audio_url
-            .or_else(|| {
-                player
-                    .hls_manifest_url
-                    .as_deref()
-                    .filter(|url| valid_media_url(url))
+        let (media, direct) = self
+            .run(move || {
+                let info = stream_extractor::stream_info(&id)
+                    .map_err(|_| backend_failed("YouTube stream extraction failed"))?;
+                if info.video_id != id {
+                    return Err(ResolveError::InvalidMediaUrl);
+                }
+                let audio = info
+                    .audio_streams
+                    .iter()
+                    .filter(|stream| !stream.is_descriptive && valid_media_url(&stream.url))
+                    .max_by_key(|stream| stream.average_bitrate_kbps.unwrap_or_default())
+                    .map(|stream| stream.url.as_str());
+                // A progressive muxed stream can carry audio when audio-only
+                // formats are absent; FFmpeg drops the video track.
+                let muxed = info
+                    .video_streams
+                    .iter()
+                    .filter(|stream| !stream.video_only && valid_media_url(&stream.url))
+                    .min_by_key(|stream| stream.bandwidth.unwrap_or(u32::MAX))
+                    .map(|stream| stream.url.as_str());
+                let direct = audio.or(muxed);
+                let url = direct
+                    .or_else(|| {
+                        info.hls_manifest_url
+                            .as_deref()
+                            .filter(|url| valid_media_url(url))
+                    })
+                    .ok_or(ResolveError::InvalidMediaUrl)?;
+                Ok((PlayableMedia::new(url), direct.is_some()))
             })
-            .ok_or(ResolveError::InvalidMediaUrl)?;
-        // Preserve the request context used by RustyPipe's own downloader.
-        let media = PlayableMedia::new(url).with_http_headers([
-            (
-                "User-Agent".to_owned(),
-                query.user_agent(player.client_type).into_owned(),
-            ),
-            ("Origin".to_owned(), "https://www.youtube.com".to_owned()),
-            ("Referer".to_owned(), "https://www.youtube.com/".to_owned()),
-        ]);
-        let direct = audio_url.is_some();
-        tracing::info!(direct, "checking resolved media access");
+            .await?;
         self.check_media_access(&media, direct).await?;
         Ok(media)
     }
@@ -197,7 +245,7 @@ impl RustyPipeResolver {
     }
 }
 
-impl TrackResolver for RustyPipeResolver {
+impl TrackResolver for StrawcoreResolver {
     fn resolve<'a>(&'a self, request: &'a TrackRequest) -> ResolveFuture<'a, ResolvedTrack> {
         Box::pin(async move {
             self.bounded(RESOLVE_TIMEOUT, self.resolve_many(request, 1, false))
@@ -237,22 +285,8 @@ impl TrackResolver for RustyPipeResolver {
     }
 }
 
-// Avoid including signed URLs, request bodies or upstream credentials in
-// user-visible errors or logs.
-fn upstream_error(error: RustyPipeError) -> ResolveError {
-    let message = match error {
-        RustyPipeError::Extraction(ExtractionError::InvalidData(message))
-            if message.contains("visitor data") =>
-        {
-            "YouTube did not provide visitor session data; playback is unavailable"
-        }
-        RustyPipeError::Extraction(ExtractionError::Unavailable { .. }) => {
-            "YouTube reports that this content is unavailable"
-        }
-        RustyPipeError::HttpStatus(429, _) => "YouTube is rate limiting requests",
-        RustyPipeError::HttpStatus(403, _) => "YouTube refused the request",
-        _ => "YouTube request failed",
-    };
+
+fn backend_failed(message: &str) -> ResolveError {
     tracing::warn!(backend = BACKEND, reason = message, "media resolution failed");
     ResolveError::BackendFailed {
         backend: BACKEND.to_owned(),
@@ -260,18 +294,26 @@ fn upstream_error(error: RustyPipeError) -> ResolveError {
     }
 }
 
-fn artwork(thumbnails: &[Thumbnail]) -> Option<String> {
-    thumbnails
+fn nonempty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn duration(seconds: i64) -> Option<u64> {
+    u64::try_from(seconds).ok().filter(|seconds| *seconds > 0)
+}
+
+fn artwork(images: &[Image]) -> Option<String> {
+    images
         .iter()
-        .max_by_key(|thumbnail| u64::from(thumbnail.width) * u64::from(thumbnail.height))
-        .map(|thumbnail| thumbnail.url.clone())
+        .max_by_key(|image| i64::from(image.width().max(0)) * i64::from(image.height().max(0)))
+        .map(|image| image.url().to_owned())
 }
 
 fn resolved_track(
     id: &str,
     title: String,
     artist: Option<String>,
-    duration: Option<u32>,
+    duration: Option<u64>,
     artwork_url: Option<String>,
 ) -> ResolvedTrack {
     let locator = format!("https://www.youtube.com/watch?v={id}");
@@ -280,35 +322,11 @@ fn resolved_track(
         metadata: TrackMetadata {
             title,
             artist,
-            duration: duration.map(|seconds| Duration::from_secs(u64::from(seconds))),
+            duration: duration.map(Duration::from_secs),
             artwork_url,
             webpage_url: locator.clone(),
         },
         locator,
-    }
-}
-
-fn collect_items(items: Vec<VideoItem>, limit: usize) -> Result<Vec<ResolvedTrack>, ResolveError> {
-    let tracks: Vec<_> = items
-        .into_iter()
-        .filter(|video| {
-            valid_video_id(&video.id) && !video.name.trim().is_empty() && !video.is_upcoming
-        })
-        .take(limit)
-        .map(|video| {
-            resolved_track(
-                &video.id,
-                video.name,
-                video.channel.map(|channel| channel.name),
-                video.duration,
-                artwork(&video.thumbnail),
-            )
-        })
-        .collect();
-    if tracks.is_empty() {
-        Err(ResolveError::NoResults)
-    } else {
-        Ok(tracks)
     }
 }
 
@@ -398,20 +416,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ipv4_resolver_can_be_constructed() {
-        assert!(RustyPipeResolver::ipv4_only().is_ok());
-    }
-
-    #[test]
-    fn visitor_data_error_is_recoverable() {
-        let error = upstream_error(RustyPipeError::Extraction(ExtractionError::InvalidData(
-            "Could not find visitor data on html page".into(),
-        )));
-        assert!(matches!(
-            error,
-            ResolveError::BackendFailed { message, .. }
-                if message.contains("visitor session data")
-        ));
+    async fn playlist_is_explicitly_unsupported() {
+        let resolver = StrawcoreResolver::new();
+        let request = TrackRequest::new("https://www.youtube.com/playlist?list=PL_example")
+            .expect("valid request");
+        let error = resolver.resolve_playlist(&request, 10).await.unwrap_err();
+        assert!(error.to_string().contains("playlist expansion"));
     }
 
     #[test]
