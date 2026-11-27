@@ -142,3 +142,7 @@ A restart cannot preserve live Discord voice transport, encryption, or decoder s
 Sonoryn tracks Gloamwire's `main` branch and uses its backend-neutral DAVE interface. The application supplies a pinned `libdave-rs` adapter to Discord's native libdave; it requires a C++ toolchain, pkg-config, and OpenSSL 3 development headers. Voice joins require DAVE protocol version 1 or higher and wait for an encryption ratchet before starting playback. The old bundled Davey feature is not used. Existing lockfiles require `cargo update -p gloamwire` to advance the upstream revision.
 
 This migration is experimental pending native dependency review, CI, and live Discord voice interoperability testing; do not deploy the draft as a production build.
+
+### Resolver network configuration
+
+By default, the HTTP resolver uses the system's normal address-family selection. If your hosting provider has broken or incorrectly geolocated IPv6 connectivity, set `SONORYN_RESOLVER_IPV4_ONLY=1` in the existing Sonoryn environment file and restart. This restricts only RustyPipe's HTTP client to IPv4; it does not alter the host network configuration, Discord transport, or FFmpeg networking. Contact your provider about incorrect IP geolocation. This setting does not guarantee media availability.
