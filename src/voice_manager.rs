@@ -1393,7 +1393,8 @@ async fn run_decoder(
         .with_volume_percent(volume_percent);
     let mut stream = match decoder.open_with_options(&media, options) {
         Ok(stream) => stream,
-        Err(_) => {
+        Err(error) => {
+            warn!(%error, "failed to start audio decoder");
             let _ = events
                 .send(DecoderEvent::Failed(PlaybackFailure::DecoderStart))
                 .await;
@@ -1413,7 +1414,8 @@ async fn run_decoder(
                 let _ = events.send(DecoderEvent::Finished).await;
                 return;
             }
-            Ok(Err(_)) => {
+            Ok(Err(error)) => {
+                warn!(%error, "audio decoder read failed");
                 let _ = events
                     .send(DecoderEvent::Failed(PlaybackFailure::DecoderRead))
                     .await;
