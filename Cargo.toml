@@ -7,8 +7,8 @@ description = "A protocol-first Discord music bot built on Gloamwire"
 repository = "https://github.com/aliceblackrose/sonoryn"
 
 [dependencies]
-gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "21db6bb6050add656f51706c03c12ff80f6f709f", features = ["tracing"] }
-gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", branch = "main", features = ["cache", "tracing", "voice"] }
+gloam-commands = { git = "https://github.com/aliceblackrose/gloam-macro-commands", rev = "6298b08793768f65da6cdcd88fb9e7bf0a7cb77d", features = ["tracing"] }
+gloamwire = { git = "https://github.com/aliceblackrose/gloamwire", rev = "86633878229c4cbfaedfe2c5c524186f7bd683f9", features = ["cache", "tracing", "voice"] }
 libdave-rs = { git = "https://github.com/mineygg/libdave-rs", rev = "100c9bca503ee3a5f29ea54db0af76589a42c9ca", default-features = false }
 rand = "0.9"
 strawcore-core = { git = "https://git.sulkta.com/Sulkta-OSS/strawcore", rev = "b231c84d9aaf5144dc1fc3d2b7fb2b4ce87b90a2" }
