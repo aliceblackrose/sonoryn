@@ -4,17 +4,20 @@ use gloam_commands::prelude::*;
 use gloamwire::model::UserId;
 use tokio::process::Command;
 
+use super::ui::{self, ReplyUi};
+
 use crate::state::AppState;
 
 const TOOL_VERSION_LIMIT: usize = 120;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
-    commands![ping, health, voice]
+    commands![ping, health, voice, help]
 }
 
 #[command(description = "Check whether Sonoryn is online")]
 pub(crate) async fn ping(ctx: Context<AppState>) -> Result<()> {
-    ctx.reply("Sonoryn is online.").await?;
+    ctx.reply_embed(ui::notice("Sonoryn is online", "Ready to play music."))
+        .await?;
     Ok(())
 }
 
@@ -27,10 +30,13 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
         tool_health("ffmpeg", &["-version"]),
     );
 
-    ctx.reply_ephemeral(format!(
-        "**Sonoryn health**\nGateway: online\nyt-dlp: {ytdlp}\nFFmpeg: {ffmpeg}"
-    ))
-    .await?;
+    let mut embed = ui::notice("System health", "Runtime dependency check");
+    embed.fields = vec![
+        ui::field("Gateway", "Online"),
+        ui::field("yt-dlp", ytdlp),
+        ui::field("FFmpeg", ffmpeg),
+    ];
+    ctx.reply_ephemeral_embed(embed).await?;
     Ok(())
 }
 
@@ -41,13 +47,13 @@ pub(crate) async fn health(ctx: Context<AppState>) -> Result<()> {
 pub(crate) async fn voice(ctx: Context<AppState>) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
 
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
@@ -61,18 +67,40 @@ pub(crate) async fn voice(ctx: Context<AppState>) -> Result<()> {
 
     match channel_id {
         Some(channel_id) => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "Your cached voice channel is <#{}>.",
                 channel_id.get()
             ))
             .await?;
         }
         None => {
-            ctx.reply_ephemeral("I do not currently see you in a voice channel.")
+            ctx.reply_status("I do not currently see you in a voice channel.")
                 .await?;
         }
     }
 
+    Ok(())
+}
+
+#[command(description = "Explore Sonoryn's music commands")]
+pub(crate) async fn help(ctx: Context<AppState>) -> Result<()> {
+    let mut embed = ui::notice(
+        "Your music, in Discord",
+        "Join a voice channel and use `/play` to search for a song or paste a URL.",
+    );
+    embed.fields = vec![
+        ui::section("Listen", "`/play` · `/playlist` · `/nowplaying`"),
+        ui::section(
+            "Playback",
+            "`/pause` · `/resume` · `/skip` · `/previous` · `/stop` · `/seek` · `/volume`",
+        ),
+        ui::section(
+            "Queue",
+            "`/queue` · `/queue-page` · `/remove` · `/move` · `/shuffle` · `/loop` · `/history`",
+        ),
+        ui::section("Voice and status", "`/join` · `/leave` · `/voice` · `/ping` · `/health`"),
+    ];
+    ctx.reply_ephemeral_embed(embed).await?;
     Ok(())
 }
 

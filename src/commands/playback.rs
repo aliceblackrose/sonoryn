@@ -8,13 +8,15 @@ use sonoryn::{
 };
 use tokio::sync::oneshot;
 
+use super::ui::{self, ReplyUi};
+
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
     state::AppState,
 };
 
 const QUEUE_PREVIEW_LIMIT: usize = 10;
-const TRACK_TITLE_LIMIT: usize = 96;
+const TRACK_TITLE_LIMIT: usize = 64;
 const ERROR_MESSAGE_LIMIT: usize = 240;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
@@ -33,12 +35,12 @@ pub(crate) async fn play(
 ) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
@@ -46,7 +48,7 @@ pub(crate) async fn play(
         .await
         .is_none()
     {
-        ctx.reply_ephemeral("Join a voice channel first, then run `/play`.")
+        ctx.reply_status("Join a voice channel first, then run `/play`.")
             .await?;
         return Ok(());
     }
@@ -54,7 +56,7 @@ pub(crate) async fn play(
     let request = match TrackRequest::new(query) {
         Ok(request) => request,
         Err(message) => {
-            ctx.reply_ephemeral(message).await?;
+            ctx.reply_status(message).await?;
             return Ok(());
         }
     };
@@ -64,14 +66,14 @@ pub(crate) async fn play(
         Ok(resolved) => resolved,
         Err(error) => {
             let message = escape_markdown(&truncate_chars(&error.to_string(), ERROR_MESSAGE_LIMIT));
-            ctx.reply_ephemeral(format!("I could not resolve that track: {message}"))
+            ctx.reply_status(format!("I could not resolve that track: {message}"))
                 .await?;
             return Ok(());
         }
     };
 
     let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("You left voice while I was resolving that track.")
+        ctx.reply_status("You left voice while I was resolving that track.")
             .await?;
         return Ok(());
     };
@@ -84,7 +86,7 @@ pub(crate) async fn play(
         VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
         } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am already connected to <#{}>. Join that channel to control playback.",
                 connected.get()
             ))
@@ -92,7 +94,7 @@ pub(crate) async fn play(
             return Ok(());
         }
         VoiceJoinResult::InProgress { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "A voice join for <#{}> is already in progress. Try `/play` again once it connects.",
                 channel_id.get()
             ))
@@ -100,11 +102,11 @@ pub(crate) async fn play(
             return Ok(());
         }
         VoiceJoinResult::Cancelled => {
-            ctx.reply_ephemeral("The voice join was cancelled.").await?;
+            ctx.reply_status("The voice join was cancelled.").await?;
             return Ok(());
         }
         VoiceJoinResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
             return Ok(());
         }
     }
@@ -125,10 +127,10 @@ pub(crate) async fn play(
                 .as_ref()
                 .is_some_and(|current| current.id == track.id)
             {
-                ctx.reply_ephemeral(format!("Playing {}", format_track(&track)))
+                ctx.reply_status(format!("Playing {}", format_track(&track)))
                     .await?;
             } else {
-                ctx.reply_ephemeral(format!(
+                ctx.reply_status(format!(
                     "Queued {} at position {queue_position}.",
                     format_track(&track)
                 ))
@@ -136,26 +138,26 @@ pub(crate) async fn play(
             }
         }
         PlaybackControlResult::NotConnected => {
-            ctx.reply_ephemeral("The voice worker disconnected before playback could start.")
+            ctx.reply_status("The voice worker disconnected before playback could start.")
                 .await?;
         }
         PlaybackControlResult::WrongVoiceChannel { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am connected to <#{}>. Join that channel to control playback.",
                 channel_id.get()
             ))
             .await?;
         }
         PlaybackControlResult::NothingPlaying => {
-            ctx.reply_ephemeral("The track was queued, but the player did not start it.")
+            ctx.reply_status("The track was queued, but the player did not start it.")
                 .await?;
         }
         PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
-            ctx.reply_ephemeral(format!("Queued {}.", format_track(&track)))
+            ctx.reply_status(format!("Queued {}.", format_track(&track)))
                 .await?;
         }
         PlaybackControlResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
         }
     }
     Ok(())
@@ -219,7 +221,7 @@ pub(crate) async fn remove(
         return Ok(());
     };
     let Some(index) = queue_index(position) else {
-        ctx.reply_ephemeral("That queue position is invalid.")
+        ctx.reply_status("That queue position is invalid.")
             .await?;
         return Ok(());
     };
@@ -231,14 +233,14 @@ pub(crate) async fn remove(
 
     match removed {
         Some(track) => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "Removed {} from queue position {position}.",
                 format_track(&track)
             ))
             .await?;
         }
         None => {
-            ctx.reply_ephemeral(format!("Queue position {position} does not exist."))
+            ctx.reply_status(format!("Queue position {position} does not exist."))
                 .await?;
         }
     }
@@ -263,7 +265,7 @@ pub(crate) async fn move_track(
         return Ok(());
     };
     let (Some(from_index), Some(to_index)) = (queue_index(from), queue_index(to)) else {
-        ctx.reply_ephemeral("One of those queue positions is invalid.")
+        ctx.reply_status("One of those queue positions is invalid.")
             .await?;
         return Ok(());
     };
@@ -275,21 +277,21 @@ pub(crate) async fn move_track(
 
     match moved {
         Some(track) if from == to => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "{} is already at queue position {from}.",
                 format_track(&track)
             ))
             .await?;
         }
         Some(track) => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "Moved {} from queue position {from} to {to}.",
                 format_track(&track)
             ))
             .await?;
         }
         None => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "Cannot move queue position {from} to {to}; one of those positions does not exist."
             ))
             .await?;
@@ -301,17 +303,23 @@ pub(crate) async fn move_track(
 #[command(description = "Show the current music queue", guild_only)]
 pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
 
-    let snapshot = {
+    let (snapshot, loop_mode) = {
         let players = ctx.data().player_manager.read().await;
-        players.snapshot(guild_id)
+        (players.snapshot(guild_id), players.loop_mode(guild_id))
     };
 
-    ctx.reply_ephemeral(render_queue(&snapshot)).await?;
+    ctx.reply_ephemeral_embed(ui::queue_card(
+        "Music queue",
+        render_queue(&snapshot),
+        &snapshot,
+        loop_mode,
+    ))
+    .await?;
     Ok(())
 }
 
@@ -321,7 +329,7 @@ pub(crate) async fn queue(ctx: Context<AppState>) -> Result<()> {
 )]
 pub(crate) async fn nowplaying(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
@@ -331,11 +339,11 @@ pub(crate) async fn nowplaying(ctx: Context<AppState>) -> Result<()> {
         players.snapshot(guild_id).now_playing
     };
 
-    let message = current.as_ref().map_or_else(
-        || "Nothing is playing right now.".to_owned(),
-        |track| format!("Now playing: {}", format_track(track)),
+    let embed = current.as_ref().map_or_else(
+        || ui::notice("Now playing", "Nothing is playing right now."),
+        |track| ui::track_card("Current track", track, None),
     );
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_ephemeral_embed(embed).await?;
     Ok(())
 }
 
@@ -347,17 +355,17 @@ async fn run_simple_control(
 ) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
     let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("Join my voice channel first to control playback.")
+        ctx.reply_status("Join my voice channel first to control playback.")
             .await?;
         return Ok(());
     };
@@ -374,24 +382,24 @@ async fn run_simple_control(
         PlaybackControlResult::AlreadyPlaying => "Playback is already running.".to_owned(),
         PlaybackControlResult::Failed(error) => error,
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
 async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option<GuildId>> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(None);
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(None);
     };
     let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("Join my voice channel first to edit the queue.")
+        ctx.reply_status("Join my voice channel first to edit the queue.")
             .await?;
         return Ok(None);
     };
@@ -406,12 +414,12 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
     {
         PlaybackControlResult::Accepted => Ok(Some(guild_id)),
         PlaybackControlResult::NotConnected => {
-            ctx.reply_ephemeral("I am not connected to voice here.")
+            ctx.reply_status("I am not connected to voice here.")
                 .await?;
             Ok(None)
         }
         PlaybackControlResult::WrongVoiceChannel { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am connected to <#{}>. Join that channel to edit the queue.",
                 channel_id.get()
             ))
@@ -419,13 +427,13 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
             Ok(None)
         }
         PlaybackControlResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
             Ok(None)
         }
         PlaybackControlResult::NothingPlaying
         | PlaybackControlResult::AlreadyPaused
         | PlaybackControlResult::AlreadyPlaying => {
-            ctx.reply_ephemeral("The voice worker rejected the queue-control context.")
+            ctx.reply_status("The voice worker rejected the queue-control context.")
                 .await?;
             Ok(None)
         }
@@ -557,7 +565,7 @@ fn format_track(track: &Track) -> String {
     }
     let _ = write!(
         output,
-        " · requested by user `{}`",
+        " · <@{}>",
         track.requested_by.user_id.get()
     );
     output

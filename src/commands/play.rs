@@ -4,8 +4,10 @@ use gloam_commands::prelude::*;
 use gloamwire::model::{
     ApplicationCommandInteractionValue, ChannelId, GuildId, Interaction, UserId,
 };
-use sonoryn::media::{RequestedBy, ResolvedTrack, Track, TrackRequest};
+use sonoryn::media::{RequestedBy, ResolvedTrack, TrackRequest};
 use tokio::sync::oneshot;
+
+use super::ui::{self, ReplyUi};
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
@@ -15,7 +17,6 @@ use crate::{
 const AUTOCOMPLETE_LIMIT: usize = 10;
 const AUTOCOMPLETE_TIMEOUT: Duration = Duration::from_millis(2_200);
 const AUTOCOMPLETE_CHOICE_NAME_LIMIT: usize = 100;
-const TRACK_TITLE_LIMIT: usize = 96;
 const ERROR_MESSAGE_LIMIT: usize = 240;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
@@ -67,12 +68,12 @@ pub(crate) async fn play(
 ) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
@@ -80,7 +81,7 @@ pub(crate) async fn play(
         .await
         .is_none()
     {
-        ctx.reply_ephemeral("Join a voice channel first, then run `/play`.")
+        ctx.reply_status("Join a voice channel first, then run `/play`.")
             .await?;
         return Ok(());
     }
@@ -88,7 +89,7 @@ pub(crate) async fn play(
     let request = match TrackRequest::new(query) {
         Ok(request) => request,
         Err(message) => {
-            ctx.reply_ephemeral(message).await?;
+            ctx.reply_status(message).await?;
             return Ok(());
         }
     };
@@ -98,14 +99,14 @@ pub(crate) async fn play(
         Ok(resolved) => resolved,
         Err(error) => {
             let message = escape_markdown(&truncate_chars(&error.to_string(), ERROR_MESSAGE_LIMIT));
-            ctx.reply_ephemeral(format!("I could not resolve that track: {message}"))
+            ctx.reply_status(format!("I could not resolve that track: {message}"))
                 .await?;
             return Ok(());
         }
     };
 
     let Some(channel_id) = current_voice_channel(ctx.data(), guild_id, user_id).await else {
-        ctx.reply_ephemeral("You left voice while I was resolving that track.")
+        ctx.reply_status("You left voice while I was resolving that track.")
             .await?;
         return Ok(());
     };
@@ -118,7 +119,7 @@ pub(crate) async fn play(
         VoiceJoinResult::AlreadyConnected {
             channel_id: connected,
         } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am already connected to <#{}>. Join that channel to control playback.",
                 connected.get()
             ))
@@ -126,7 +127,7 @@ pub(crate) async fn play(
             return Ok(());
         }
         VoiceJoinResult::InProgress { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "A voice join for <#{}> is already in progress. Try `/play` again once it connects.",
                 channel_id.get()
             ))
@@ -134,11 +135,11 @@ pub(crate) async fn play(
             return Ok(());
         }
         VoiceJoinResult::Cancelled => {
-            ctx.reply_ephemeral("The voice join was cancelled.").await?;
+            ctx.reply_status("The voice join was cancelled.").await?;
             return Ok(());
         }
         VoiceJoinResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
             return Ok(());
         }
     }
@@ -159,37 +160,42 @@ pub(crate) async fn play(
                 .as_ref()
                 .is_some_and(|current| current.id == track.id)
             {
-                ctx.reply_ephemeral(format!("Playing {}", format_track(&track)))
+                ctx.reply_ephemeral_embed(ui::track_card("Now playing", &track, None))
                     .await?;
             } else {
-                ctx.reply_ephemeral(format!(
-                    "Queued {} at position {queue_position}.",
-                    format_track(&track)
+                ctx.reply_ephemeral_embed(ui::track_card(
+                    "Added to queue",
+                    &track,
+                    Some(queue_position),
                 ))
                 .await?;
             }
         }
         PlaybackControlResult::NotConnected => {
-            ctx.reply_ephemeral("The voice worker disconnected before playback could start.")
+            ctx.reply_status("The voice worker disconnected before playback could start.")
                 .await?;
         }
         PlaybackControlResult::WrongVoiceChannel { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am connected to <#{}>. Join that channel to control playback.",
                 channel_id.get()
             ))
             .await?;
         }
         PlaybackControlResult::NothingPlaying => {
-            ctx.reply_ephemeral("The track was queued, but the player did not start it.")
+            ctx.reply_status("The track was queued, but the player did not start it.")
                 .await?;
         }
         PlaybackControlResult::AlreadyPaused | PlaybackControlResult::AlreadyPlaying => {
-            ctx.reply_ephemeral(format!("Queued {}.", format_track(&track)))
-                .await?;
+            ctx.reply_ephemeral_embed(ui::track_card(
+                "Added to queue",
+                &track,
+                Some(queue_position),
+            ))
+            .await?;
         }
         PlaybackControlResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
         }
     }
     Ok(())
@@ -313,18 +319,6 @@ fn invoking_user_id(interaction: &Interaction) -> Option<UserId> {
         .and_then(|member| member.user.as_ref())
         .map(|user| user.id)
         .or_else(|| interaction.user.as_ref().map(|user| user.id))
-}
-
-fn format_track(track: &Track) -> String {
-    let title = escape_markdown(&truncate_chars(&track.metadata.title, TRACK_TITLE_LIMIT));
-    let title = format!("**{title}**");
-    match track.metadata.artist.as_deref() {
-        Some(artist) if !artist.trim().is_empty() => {
-            let artist = escape_markdown(&truncate_chars(artist, TRACK_TITLE_LIMIT));
-            format!("{title} — {artist}")
-        }
-        _ => title,
-    }
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {

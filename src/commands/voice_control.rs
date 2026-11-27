@@ -2,6 +2,8 @@ use gloam_commands::prelude::*;
 use gloamwire::model::UserId;
 use tokio::sync::oneshot;
 
+use super::ui::ReplyUi;
+
 use crate::{
     gateway_control::{GatewayControl, VoiceJoinResult, VoiceLeaveResult},
     state::AppState,
@@ -15,12 +17,12 @@ pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
 pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(());
     };
@@ -32,7 +34,7 @@ pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
             .and_then(|state| state.channel_id)
     };
     let Some(channel_id) = channel_id else {
-        ctx.reply_ephemeral("Join a voice channel first, then run `/join`.")
+        ctx.reply_status("Join a voice channel first, then run `/join`.")
             .await?;
         return Ok(());
     };
@@ -50,7 +52,7 @@ pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
         .await
         .is_err()
     {
-        ctx.reply_ephemeral("The Gateway control loop is unavailable.")
+        ctx.reply_status("The Gateway control loop is unavailable.")
             .await?;
         return Ok(());
     }
@@ -75,14 +77,14 @@ pub(crate) async fn join(ctx: Context<AppState>) -> Result<()> {
         Ok(VoiceJoinResult::Failed(error)) => error,
         Err(_) => "The voice join task ended before returning a result.".to_owned(),
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
 #[command(description = "Disconnect Sonoryn from voice", guild_only)]
 pub(crate) async fn leave(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
@@ -96,7 +98,7 @@ pub(crate) async fn leave(ctx: Context<AppState>) -> Result<()> {
         .await
         .is_err()
     {
-        ctx.reply_ephemeral("The Gateway control loop is unavailable.")
+        ctx.reply_status("The Gateway control loop is unavailable.")
             .await?;
         return Ok(());
     }
@@ -112,7 +114,7 @@ pub(crate) async fn leave(ctx: Context<AppState>) -> Result<()> {
         Ok(VoiceLeaveResult::Failed(error)) => error,
         Err(_) => "The voice leave task ended before returning a result.".to_owned(),
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 

@@ -4,6 +4,8 @@ use gloam_commands::prelude::*;
 use gloamwire::model::{ChannelId, GuildId, UserId};
 use tokio::sync::oneshot;
 
+use super::ui::ReplyUi;
+
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult},
     state::AppState,
@@ -25,12 +27,12 @@ pub(crate) async fn seek(
     position: String,
 ) -> Result<()> {
     let Some(position) = parse_seek_position(&position) else {
-        ctx.reply_ephemeral("Use a seek position like `90`, `1:30`, or `1:02:03`.")
+        ctx.reply_status("Use a seek position like `90`, `1:30`, or `1:02:03`.")
             .await?;
         return Ok(());
     };
     let Ok(position_millis) = u64::try_from(position.as_millis()) else {
-        ctx.reply_ephemeral("That seek position is too large.")
+        ctx.reply_status("That seek position is too large.")
             .await?;
         return Ok(());
     };
@@ -60,7 +62,7 @@ pub(crate) async fn seek(
         }
         PlaybackControlResult::Failed(error) => error,
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
@@ -73,7 +75,7 @@ pub(crate) async fn volume(
     percent: i64,
 ) -> Result<()> {
     let Ok(percent) = u8::try_from(percent) else {
-        ctx.reply_ephemeral("Volume must be between 0 and 100 percent.")
+        ctx.reply_status("Volume must be between 0 and 100 percent.")
             .await?;
         return Ok(());
     };
@@ -103,19 +105,19 @@ pub(crate) async fn volume(
         }
         PlaybackControlResult::Failed(error) => error,
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
 async fn require_voice_channel(ctx: &Context<AppState>) -> Result<Option<(GuildId, ChannelId)>> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(None);
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(None);
     };
@@ -126,7 +128,7 @@ async fn require_voice_channel(ctx: &Context<AppState>) -> Result<Option<(GuildI
             .and_then(|state| state.channel_id)
     };
     let Some(channel_id) = channel_id else {
-        ctx.reply_ephemeral("Join my voice channel first to control playback.")
+        ctx.reply_status("Join my voice channel first to control playback.")
             .await?;
         return Ok(None);
     };

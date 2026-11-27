@@ -8,6 +8,8 @@ use sonoryn::{
 };
 use tokio::sync::oneshot;
 
+use super::ui::{self, ReplyUi};
+
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult},
     state::AppState,
@@ -15,7 +17,7 @@ use crate::{
 
 const QUEUE_PAGE_SIZE: usize = 10;
 const HISTORY_PREVIEW_LIMIT: usize = 10;
-const TRACK_TITLE_LIMIT: usize = 96;
+const TRACK_TITLE_LIMIT: usize = 64;
 
 pub(crate) fn command_list() -> Vec<gloam_commands::SlashCommand<AppState>> {
     commands![shuffle, loop_mode, queue_page, previous, history]
@@ -37,7 +39,7 @@ pub(crate) async fn shuffle(ctx: Context<AppState>) -> Result<()> {
         1 => "There is only one queued track, so there is nothing to shuffle.".to_owned(),
         count => format!("Shuffled {count} queued tracks."),
     };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
@@ -64,7 +66,7 @@ pub(crate) async fn loop_mode(
             "track" => LoopMode::Track,
             "queue" => LoopMode::Queue,
             _ => {
-                ctx.reply_ephemeral("That loop mode is not supported.")
+                ctx.reply_status("That loop mode is not supported.")
                     .await?;
                 return Ok(());
             }
@@ -77,7 +79,7 @@ pub(crate) async fn loop_mode(
         players.loop_mode(guild_id)
     };
 
-    ctx.reply_ephemeral(format!("Loop mode: **{}**.", loop_mode_name(current)))
+    ctx.reply_status(format!("Loop mode: **{}**.", loop_mode_name(current)))
         .await?;
     Ok(())
 }
@@ -94,22 +96,27 @@ pub(crate) async fn queue_page(
     page: Option<i64>,
 ) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
     let page = page.unwrap_or(1);
     let Some(page_index) = page_index(page) else {
-        ctx.reply_ephemeral("That queue page is invalid.").await?;
+        ctx.reply_status("That queue page is invalid.").await?;
         return Ok(());
     };
 
-    let snapshot = {
+    let (snapshot, loop_mode) = {
         let players = ctx.data().player_manager.read().await;
-        players.snapshot(guild_id)
+        (players.snapshot(guild_id), players.loop_mode(guild_id))
     };
-    ctx.reply_ephemeral(render_queue_page(&snapshot, page_index))
-        .await?;
+    ctx.reply_ephemeral_embed(ui::queue_card(
+        "Music queue",
+        render_queue_page(&snapshot, page_index),
+        &snapshot,
+        loop_mode,
+    ))
+    .await?;
     Ok(())
 }
 
@@ -139,14 +146,14 @@ pub(crate) async fn previous(ctx: Context<AppState>) -> Result<()> {
             }
             PlaybackControlResult::Failed(error) => error,
         };
-    ctx.reply_ephemeral(message).await?;
+    ctx.reply_status(message).await?;
     Ok(())
 }
 
 #[command(description = "Show recent playback history", guild_only)]
 pub(crate) async fn history(ctx: Context<AppState>) -> Result<()> {
     let Some(guild_id) = ctx.interaction().guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(());
     };
@@ -155,7 +162,12 @@ pub(crate) async fn history(ctx: Context<AppState>) -> Result<()> {
         let history = ctx.data().history_manager.read().await;
         history.snapshot(guild_id)
     };
-    ctx.reply_ephemeral(render_history(&history)).await?;
+    let mut embed = ui::notice("Recently played", render_history(&history));
+    embed.fields.push(ui::field(
+        "Tracks in history",
+        history.len().to_string(),
+    ));
+    ctx.reply_ephemeral_embed(embed).await?;
     Ok(())
 }
 
@@ -284,12 +296,12 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
     {
         PlaybackControlResult::Accepted => Ok(Some(guild_id)),
         PlaybackControlResult::NotConnected => {
-            ctx.reply_ephemeral("I am not connected to voice here.")
+            ctx.reply_status("I am not connected to voice here.")
                 .await?;
             Ok(None)
         }
         PlaybackControlResult::WrongVoiceChannel { channel_id } => {
-            ctx.reply_ephemeral(format!(
+            ctx.reply_status(format!(
                 "I am connected to <#{}>. Join that channel to edit the queue.",
                 channel_id.get()
             ))
@@ -297,13 +309,13 @@ async fn require_queue_control_context(ctx: &Context<AppState>) -> Result<Option
             Ok(None)
         }
         PlaybackControlResult::Failed(error) => {
-            ctx.reply_ephemeral(error).await?;
+            ctx.reply_status(error).await?;
             Ok(None)
         }
         PlaybackControlResult::NothingPlaying
         | PlaybackControlResult::AlreadyPaused
         | PlaybackControlResult::AlreadyPlaying => {
-            ctx.reply_ephemeral("The voice worker rejected the queue-control context.")
+            ctx.reply_status("The voice worker rejected the queue-control context.")
                 .await?;
             Ok(None)
         }
@@ -316,12 +328,12 @@ async fn require_voice_channel(
 ) -> Result<Option<(GuildId, ChannelId)>> {
     let interaction = ctx.interaction();
     let Some(guild_id) = interaction.guild_id else {
-        ctx.reply_ephemeral("This command can only be used in a server.")
+        ctx.reply_status("This command can only be used in a server.")
             .await?;
         return Ok(None);
     };
     let Some(user_id) = invoking_user_id(interaction) else {
-        ctx.reply_ephemeral("I could not determine the invoking user.")
+        ctx.reply_status("I could not determine the invoking user.")
             .await?;
         return Ok(None);
     };
@@ -332,7 +344,7 @@ async fn require_voice_channel(
             .and_then(|state| state.channel_id)
     };
     let Some(channel_id) = channel_id else {
-        ctx.reply_ephemeral(format!("Join my voice channel first to {purpose}."))
+        ctx.reply_status(format!("Join my voice channel first to {purpose}."))
             .await?;
         return Ok(None);
     };
