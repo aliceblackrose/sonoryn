@@ -8,7 +8,10 @@ use sonoryn::{
 };
 use tokio::sync::oneshot;
 
-use super::{panel, ui::{self, ReplyUi}};
+use super::{
+    panel,
+    ui::{self, ReplyUi},
+};
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},

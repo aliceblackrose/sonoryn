@@ -84,7 +84,10 @@ pub(super) async fn enqueue_card(
     let Some(user_id) = invoking_user_id(interaction) else {
         return notice("I could not determine the invoking user.".to_owned());
     };
-    if current_voice_channel(state, guild_id, user_id).await.is_none() {
+    if current_voice_channel(state, guild_id, user_id)
+        .await
+        .is_none()
+    {
         return notice("Join a voice channel first, then add a track.".to_owned());
     }
     let request = match TrackRequest::new(query) {
@@ -103,8 +106,12 @@ pub(super) async fn enqueue_card(
     };
     match ensure_voice(state, guild_id, channel_id).await {
         VoiceJoinResult::Joined { .. } => {}
-        VoiceJoinResult::AlreadyConnected { channel_id: connected } if connected == channel_id => {}
-        VoiceJoinResult::AlreadyConnected { channel_id: connected } => {
+        VoiceJoinResult::AlreadyConnected {
+            channel_id: connected,
+        } if connected == channel_id => {}
+        VoiceJoinResult::AlreadyConnected {
+            channel_id: connected,
+        } => {
             return notice(format!(
                 "I am already connected to <#{}>. Join that channel to control playback.",
                 connected.get()
@@ -126,7 +133,11 @@ pub(super) async fn enqueue_card(
     match playback_control(state, guild_id, channel_id, PlaybackAction::Wake).await {
         PlaybackControlResult::Accepted => {
             let snapshot = state.player_manager.read().await.snapshot(guild_id);
-            if snapshot.now_playing.as_ref().is_some_and(|current| current.id == track.id) {
+            if snapshot
+                .now_playing
+                .as_ref()
+                .is_some_and(|current| current.id == track.id)
+            {
                 ui::track_card("Now playing", &track, None)
             } else {
                 ui::track_card("Added to queue", &track, Some(queue_position))

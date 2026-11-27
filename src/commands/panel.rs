@@ -89,7 +89,12 @@ pub(super) async fn reply_card(
 
 pub(super) fn launch_buttons() -> Vec<Component> {
     vec![Component::action_row([
-        button("player", "Open player", InteractiveButtonStyle::Primary, false),
+        button(
+            "player",
+            "Open player",
+            InteractiveButtonStyle::Primary,
+            false,
+        ),
         button("add", "Add track", InteractiveButtonStyle::Success, false),
         button("queue:0", "Queue", InteractiveButtonStyle::Secondary, false),
     ])]
@@ -121,14 +126,13 @@ fn parse_action(id: &str) -> Option<Action> {
                 .find_map(|prefix| action.strip_prefix(*prefix))
             {
                 Action::View(View::Queue(page.parse().ok()?))
-            } else if let Some(volume) = action.strip_prefix("volume:") {
+            } else {
+                let volume = action.strip_prefix("volume:")?;
                 let volume = volume.parse().ok()?;
                 if !matches!(volume, 0 | 25 | 50 | 75 | 100) {
                     return None;
                 }
                 Action::Volume(volume)
-            } else {
-                return None;
             }
         }
     })
@@ -169,10 +173,46 @@ fn controls(
 
     let idle = snapshot.now_playing.is_none();
     let navigation = vec![
-        button("player", "Player", if view == View::Player { Primary } else { Secondary }, false),
-        button("queue:0", "Queue", if matches!(view, View::Queue(_)) { Primary } else { Secondary }, false),
-        button("history", "History", if view == View::History { Primary } else { Secondary }, false),
-        button("mixer", "Mixer", if view == View::Mixer { Primary } else { Secondary }, false),
+        button(
+            "player",
+            "Player",
+            if view == View::Player {
+                Primary
+            } else {
+                Secondary
+            },
+            false,
+        ),
+        button(
+            "queue:0",
+            "Queue",
+            if matches!(view, View::Queue(_)) {
+                Primary
+            } else {
+                Secondary
+            },
+            false,
+        ),
+        button(
+            "history",
+            "History",
+            if view == View::History {
+                Primary
+            } else {
+                Secondary
+            },
+            false,
+        ),
+        button(
+            "mixer",
+            "Mixer",
+            if view == View::Mixer {
+                Primary
+            } else {
+                Secondary
+            },
+            false,
+        ),
         button("add", "Add track", Success, false),
     ];
     let mut rows = vec![Component::action_row(navigation)];
@@ -187,7 +227,11 @@ fn controls(
         button(
             "repeat",
             &format!("Repeat: {}", loop_label(mode)),
-            if mode == LoopMode::Off { Secondary } else { Success },
+            if mode == LoopMode::Off {
+                Secondary
+            } else {
+                Success
+            },
             false,
         ),
         button("restart", "Restart track", Secondary, idle),
@@ -222,7 +266,12 @@ fn controls(
             rows.push(Component::action_row([0, 25, 50, 75, 100].map(|percent| {
                 button(
                     &format!("volume:{percent}"),
-                    if percent == 0 { "Mute".to_owned() } else { format!("{percent}%") }.as_str(),
+                    if percent == 0 {
+                        "Mute".to_owned()
+                    } else {
+                        format!("{percent}%")
+                    }
+                    .as_str(),
                     Secondary,
                     false,
                 )
@@ -231,7 +280,7 @@ fn controls(
         View::Player | View::History => {
             if let Some(url) = source {
                 rows.push(Component::action_row([
-                    Component::link_button(url).with_label("Open source"),
+                    Component::link_button(url).with_label("Open source")
                 ]));
             }
         }
@@ -257,13 +306,20 @@ async fn render(
     let mut embed = match view {
         View::Player => {
             let mut card = snapshot.now_playing.as_ref().map_or_else(
-                || ui::notice("Sonoryn player", "Nothing is playing. Use **Add track** to get started."),
+                || {
+                    ui::notice(
+                        "Sonoryn player",
+                        "Nothing is playing. Use **Add track** to get started.",
+                    )
+                },
                 |track| ui::track_card("SONORYN · Current track", track, None),
             );
-            card.fields.push(ui::field("Up next", snapshot.queue.len().to_string()));
+            card.fields
+                .push(ui::field("Up next", snapshot.queue.len().to_string()));
             card.fields.push(ui::field("Repeat", loop_label(mode)));
             if let Some(next) = snapshot.queue.first() {
-                card.fields.push(ui::section("Next track", &next.metadata.title));
+                card.fields
+                    .push(ui::section("Next track", &next.metadata.title));
             }
             card
         }
@@ -275,7 +331,8 @@ async fn render(
         ),
         View::History => {
             let mut card = ui::notice("Recently played", queue::render_history(&history));
-            card.fields.push(ui::field("History size", history.len().to_string()));
+            card.fields
+                .push(ui::field("History size", history.len().to_string()));
             card
         }
         View::Mixer => ui::notice(
@@ -297,13 +354,15 @@ async fn render(
 }
 
 pub(crate) fn owns(interaction: &Interaction) -> bool {
-    matches!(interaction.kind, InteractionType::MESSAGE_COMPONENT | InteractionType::MODAL_SUBMIT)
-        && interaction
-            .data
-            .as_ref()
-            .and_then(|data| data.get("custom_id"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|id| id.starts_with(PREFIX))
+    matches!(
+        interaction.kind,
+        InteractionType::MESSAGE_COMPONENT | InteractionType::MODAL_SUBMIT
+    ) && interaction
+        .data
+        .as_ref()
+        .and_then(|data| data.get("custom_id"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| id.starts_with(PREFIX))
 }
 
 async fn acknowledge(
@@ -383,7 +442,10 @@ fn modal() -> serde_json::Result<Modal> {
 fn submitted_query(data: &serde_json::Value) -> Option<&str> {
     let rows = data.get("components")?.as_array()?;
     rows.iter()
-        .filter_map(|row| row.get("component").or_else(|| row.get("components")?.as_array()?.first()))
+        .filter_map(|row| {
+            row.get("component")
+                .or_else(|| row.get("components")?.as_array()?.first())
+        })
         .find_map(|input| {
             if input.get("custom_id")?.as_str()? != INPUT_ID {
                 return None;
@@ -413,17 +475,20 @@ pub(crate) async fn handle(
             return private_notice(rest, interaction, "That form is no longer supported.").await;
         }
         let Some(query) = interaction.data.as_ref().and_then(submitted_query) else {
-            return private_notice(rest, interaction, "Enter a song or URL (1–200 characters).").await;
+            return private_notice(rest, interaction, "Enter a song or URL (1–200 characters).")
+                .await;
         };
         acknowledge(
             rest,
             interaction,
             InteractionResponse {
                 kind: InteractionCallbackType::DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-                data: Some(InteractionCallbackData::Message(Box::new(InteractionMessageData {
-                    flags: Some(MessageFlags::EPHEMERAL),
-                    ..Default::default()
-                }))),
+                data: Some(InteractionCallbackData::Message(Box::new(
+                    InteractionMessageData {
+                        flags: Some(MessageFlags::EPHEMERAL),
+                        ..Default::default()
+                    },
+                ))),
             },
         )
         .await?;
@@ -458,8 +523,15 @@ pub(crate) async fn handle(
     let (view, status) = if let Action::View(view) = action {
         (view, None)
     } else {
-        let view = if matches!(action, Action::Volume(_)) { View::Mixer } else { View::Player };
-        (view, Some(apply(state, interaction, guild_id, action).await))
+        let view = if matches!(action, Action::Volume(_)) {
+            View::Mixer
+        } else {
+            View::Player
+        };
+        (
+            view,
+            Some(apply(state, interaction, guild_id, action).await),
+        )
     };
     let (embed, components) = render(state, guild_id, view, status.as_deref()).await;
     edit_panel(rest, interaction, embed, components).await
@@ -479,26 +551,36 @@ async fn apply(
     };
     let (transport, accepted, idle) = match action {
         Action::Transport(PlaybackAction::Previous) => (
-            PlaybackAction::Previous, "Playing the previous track.", "No previous track in history.",
+            PlaybackAction::Previous,
+            "Playing the previous track.",
+            "No previous track in history.",
         ),
         Action::Transport(PlaybackAction::Pause) => (
-            PlaybackAction::Pause, "Paused playback.", "Nothing is playing.",
+            PlaybackAction::Pause,
+            "Paused playback.",
+            "Nothing is playing.",
         ),
         Action::Transport(PlaybackAction::Resume) => (
-            PlaybackAction::Resume, "Resumed playback.", "Nothing is playing.",
+            PlaybackAction::Resume,
+            "Resumed playback.",
+            "Nothing is playing.",
         ),
         Action::Transport(PlaybackAction::Skip) => (
-            PlaybackAction::Skip, "Skipped the current track.", "Nothing is playing.",
+            PlaybackAction::Skip,
+            "Skipped the current track.",
+            "Nothing is playing.",
         ),
         Action::Restart => (
-            PlaybackAction::Seek { position_millis: 0 }, "Restarted the track.", "Nothing is playing.",
+            PlaybackAction::Seek { position_millis: 0 },
+            "Restarted the track.",
+            "Nothing is playing.",
         ),
         Action::Volume(percent) => (
-            PlaybackAction::Volume { percent }, "Volume updated.", "Volume set for the next track.",
+            PlaybackAction::Volume { percent },
+            "Volume updated.",
+            "Volume set for the next track.",
         ),
-        Action::Shuffle | Action::Repeat => (
-            PlaybackAction::CheckContext, "", "",
-        ),
+        Action::Shuffle | Action::Repeat => (PlaybackAction::CheckContext, "", ""),
         _ => return "Unsupported control.".to_owned(),
     };
     let result = playback::playback_control(state, guild_id, channel_id, transport).await;
@@ -520,11 +602,15 @@ async fn apply(
         PlaybackControlResult::Accepted | PlaybackControlResult::NothingPlaying
             if matches!(action, Action::Volume(_)) =>
         {
-            let Action::Volume(percent) = action else { unreachable!() };
+            let Action::Volume(percent) = action else {
+                unreachable!()
+            };
             format!("Volume set to {percent}%.")
         }
         PlaybackControlResult::Accepted => accepted.to_owned(),
-        PlaybackControlResult::NothingPlaying if matches!(action, Action::Shuffle | Action::Repeat) => {
+        PlaybackControlResult::NothingPlaying
+            if matches!(action, Action::Shuffle | Action::Repeat) =>
+        {
             "The voice worker rejected the queue-control context.".to_owned()
         }
         PlaybackControlResult::NothingPlaying => idle.to_owned(),
@@ -546,8 +632,14 @@ mod tests {
 
     #[test]
     fn routes_only_supported_namespaced_controls() {
-        assert_eq!(parse_action("sonoryn:panel:v1:queue-next:2"), Some(Action::View(View::Queue(2))));
-        assert_eq!(parse_action("sonoryn:panel:v1:volume:50"), Some(Action::Volume(50)));
+        assert_eq!(
+            parse_action("sonoryn:panel:v1:queue-next:2"),
+            Some(Action::View(View::Queue(2)))
+        );
+        assert_eq!(
+            parse_action("sonoryn:panel:v1:volume:50"),
+            Some(Action::Volume(50))
+        );
         assert_eq!(parse_action("sonoryn:panel:v1:volume:999"), None);
         assert_eq!(parse_action("sonoryn:panel:v1:queue:-1"), None);
         assert_eq!(parse_action("other:pause"), None);
@@ -571,7 +663,13 @@ mod tests {
     #[test]
     fn panels_obey_discord_button_limits_and_have_unique_routable_ids() {
         for view in [View::Player, View::Queue(0), View::History, View::Mixer] {
-            let rows = controls(&PlayerSnapshot::default(), LoopMode::Off, view, false, Some("https://example.com"));
+            let rows = controls(
+                &PlayerSnapshot::default(),
+                LoopMode::Off,
+                view,
+                false,
+                Some("https://example.com"),
+            );
             assert!(rows.len() <= 5);
             let mut ids = HashSet::new();
             for row in rows {
@@ -595,6 +693,9 @@ mod tests {
             "components": [{"type": 18, "component": {"type": 4, "custom_id": INPUT_ID, "value": "  a song  "}}]
         });
         assert_eq!(submitted_query(&submission), Some("a song"));
-        assert_eq!(submitted_query(&serde_json::json!({"components": []})), None);
+        assert_eq!(
+            submitted_query(&serde_json::json!({"components": []})),
+            None
+        );
     }
 }
