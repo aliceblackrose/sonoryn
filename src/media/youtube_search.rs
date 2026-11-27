@@ -47,7 +47,9 @@ fn parse_search_page(body: &str, limit: usize) -> Result<Vec<ResolvedTrack>, Res
         .next()
         .ok_or(ResolveError::NoResults)??;
     let sections = data
-        .pointer("/contents/twoColumnSearchResultsRenderer/primaryContents/sectionListRenderer/contents")
+        .pointer(
+            "/contents/twoColumnSearchResultsRenderer/primaryContents/sectionListRenderer/contents",
+        )
         .and_then(Value::as_array)
         .ok_or(ResolveError::NoResults)?;
 
