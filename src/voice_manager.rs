@@ -24,6 +24,7 @@ use crate::{
         GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult, VoiceLeaveResult,
     },
     history::HistoryManager,
+    persistence::{CheckpointEntry, Checkpoints, VoiceCheckpoint},
 };
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -52,10 +53,12 @@ struct VoiceWorkerServices {
     history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
+    checkpoints: Checkpoints,
+    resume: Option<VoiceCheckpoint>,
 }
 
 enum VoiceWorkerCommand {
-    Shutdown,
+    Shutdown { preserve: bool },
     Playback {
         action: PlaybackAction,
         response: oneshot::Sender<PlaybackControlResult>,
@@ -92,6 +95,7 @@ pub(crate) struct VoiceManager {
     history: Arc<RwLock<HistoryManager>>,
     resolver: Arc<dyn TrackResolver>,
     decoder: FfmpegOpusDecoder,
+    checkpoints: Checkpoints,
     next_id: u64,
 }
 
@@ -100,6 +104,7 @@ impl VoiceManager {
         players: Arc<RwLock<PlayerManager>>,
         history: Arc<RwLock<HistoryManager>>,
         resolver: Arc<dyn TrackResolver>,
+        checkpoints: Checkpoints,
     ) -> (Self, mpsc::Receiver<VoiceWorkerEvent>) {
         let (worker_events, receiver) = mpsc::channel(VOICE_EVENT_CAPACITY);
         (
@@ -112,6 +117,7 @@ impl VoiceManager {
                 history,
                 resolver,
                 decoder: FfmpegOpusDecoder::new(),
+                checkpoints,
                 next_id: 0,
             },
             receiver,
@@ -181,7 +187,7 @@ impl VoiceManager {
             };
 
             match outcome {
-                RendezvousOutcome::Ready(info) => self.start_worker(guild_id, pending, info),
+                RendezvousOutcome::Ready(info) => self.start_worker(guild_id, pending, info).await,
                 RendezvousOutcome::ServerUnavailable => {
                     let _ = pending.response.send(VoiceJoinResult::Failed(
                         "Discord has not allocated a voice server for this guild yet.".to_owned(),
@@ -298,8 +304,11 @@ impl VoiceManager {
 
         let workers = self.workers.drain().collect::<Vec<_>>();
         for (guild_id, worker) in workers {
+            let _ = worker
+                .commands
+                .send(VoiceWorkerCommand::Shutdown { preserve: true })
+                .await;
             disconnect_gateway_voice(gateway, guild_id).await;
-            let _ = worker.commands.send(VoiceWorkerCommand::Shutdown).await;
         }
 
         while let Some(result) = self.tasks.join_next().await {
@@ -307,6 +316,21 @@ impl VoiceManager {
                 error!(error = %error, "voice worker task failed during shutdown");
             }
         }
+    }
+
+    pub(crate) async fn restore_voice(
+        &mut self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+        gateway: &mut GatewayConnection,
+        bot_id: UserId,
+    ) {
+        if self.players.read().await.snapshot(guild_id).is_idle() {
+            return;
+        }
+        let (response, _result) = oneshot::channel();
+        self.join_voice(guild_id, channel_id, response, gateway, Some(bot_id))
+            .await;
     }
 
     async fn join_voice(
@@ -380,6 +404,7 @@ impl VoiceManager {
         response: oneshot::Sender<VoiceLeaveResult>,
         gateway: &mut GatewayConnection,
     ) {
+        self.checkpoints.write().await.remove(&guild_id);
         if let Some(pending) = self.pending.remove(&guild_id) {
             let channel_id = pending.channel_id;
             let _ = pending.response.send(VoiceJoinResult::Cancelled);
@@ -406,7 +431,11 @@ impl VoiceManager {
             return;
         };
 
-        let _ = worker.commands.send(VoiceWorkerCommand::Shutdown).await;
+        self.players.write().await.clear(guild_id);
+        let _ = worker
+            .commands
+            .send(VoiceWorkerCommand::Shutdown { preserve: false })
+            .await;
         match gateway
             .update_voice_state(&UpdateVoiceState::new(guild_id, None))
             .await
@@ -454,7 +483,12 @@ impl VoiceManager {
         }
     }
 
-    fn start_worker(&mut self, guild_id: GuildId, pending: PendingJoin, info: VoiceConnectionInfo) {
+    async fn start_worker(
+        &mut self,
+        guild_id: GuildId,
+        pending: PendingJoin,
+        info: VoiceConnectionInfo,
+    ) {
         let generation = self.next_id();
         let (commands, receiver) = mpsc::channel(VOICE_COMMAND_CAPACITY);
         self.workers.insert(
@@ -466,12 +500,28 @@ impl VoiceManager {
             },
         );
 
+        let resume = {
+            let mut checkpoints = self.checkpoints.write().await;
+            let old = checkpoints.get(&guild_id).map(|entry| entry.checkpoint);
+            let mut checkpoint = old.unwrap_or_else(|| VoiceCheckpoint::new(pending.channel_id));
+            checkpoint.channel_id = pending.channel_id;
+            checkpoints.insert(
+                guild_id,
+                CheckpointEntry {
+                    generation,
+                    checkpoint,
+                },
+            );
+            old
+        };
         let services = VoiceWorkerServices {
             worker_events: self.worker_events.clone(),
             players: self.players.clone(),
             history: self.history.clone(),
             resolver: self.resolver.clone(),
             decoder: self.decoder.clone(),
+            checkpoints: self.checkpoints.clone(),
+            resume,
         };
         self.tasks.spawn(run_voice_worker(
             guild_id,
@@ -585,6 +635,8 @@ async fn run_voice_worker(
         history,
         resolver,
         decoder,
+        checkpoints,
+        resume,
     } = services;
     let connect = DaveVoiceSession::<DaveyProvider>::connect_davey(info, channel_id);
     tokio::pin!(connect);
@@ -609,8 +661,10 @@ async fn run_voice_worker(
                 }
             }
         }
-        _ = commands.recv() => {
-            players.write().await.clear(guild_id);
+        command = commands.recv() => {
+            if matches!(command, Some(VoiceWorkerCommand::Shutdown { preserve: false })) {
+                players.write().await.clear(guild_id);
+            }
             let _ = response.send(VoiceJoinResult::Cancelled);
             send_stopped(
                 &worker_events,
@@ -630,9 +684,31 @@ async fn run_voice_worker(
         "DAVE voice session connected"
     );
 
-    let mut active: Option<ActivePlayback> = None;
-    let mut volume_percent = 100_u8;
-    let mut idle_deadline = Some(Instant::now() + IDLE_TIMEOUT);
+    let mut volume_percent = resume.map_or(100, |state| state.volume_percent.min(100));
+    let current = players.read().await.snapshot(guild_id).now_playing;
+    let mut active = if let Some(track) = current {
+        let restored = resume.filter(|state| state.track_id == Some(track.id));
+        let position = restored.map_or(Duration::ZERO, |state| {
+            let position = Duration::from_millis(state.position_millis);
+            if track.metadata.duration.is_some_and(|duration| position >= duration) {
+                Duration::ZERO
+            } else {
+                position
+            }
+        });
+        Some(ActivePlayback::spawn(
+            track,
+            resolver.clone(),
+            decoder.clone(),
+            position,
+            volume_percent,
+            restored.is_some_and(|state| state.paused),
+        ))
+    } else {
+        start_next_playback(guild_id, &players, &resolver, &decoder, volume_percent).await
+    };
+    let mut last_checkpoint = Instant::now();
+    let mut idle_deadline = active.is_none().then(|| Instant::now() + IDLE_TIMEOUT);
     let reason = loop {
         let decoder_enabled = active.as_ref().is_some_and(|playback| !playback.paused);
         let idle = active.is_none();
@@ -654,10 +730,15 @@ async fn run_voice_worker(
             }
         };
 
+        let is_frame = matches!(&input, VoiceWorkerInput::Decoder(Some(DecoderEvent::Frame(_))));
         match input {
-            VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Shutdown))
-            | VoiceWorkerInput::Command(None) => {
-                players.write().await.clear(guild_id);
+            VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Shutdown { preserve })) => {
+                if preserve {
+                    update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
+                        .await;
+                } else {
+                    players.write().await.clear(guild_id);
+                }
                 if let Some(playback) = active.take() {
                     let speaking = playback.speaking;
                     playback.cancel();
@@ -669,6 +750,11 @@ async fn run_voice_worker(
                         );
                     }
                 }
+                break VoiceWorkerStopReason::Requested;
+            }
+            VoiceWorkerInput::Command(None) => {
+                update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
+                    .await;
                 break VoiceWorkerStopReason::Requested;
             }
             VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Playback { action, response })) => {
@@ -862,6 +948,8 @@ async fn run_voice_worker(
                         }
                     }
                 };
+                update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
+                    .await;
                 let _ = response.send(result);
             }
             VoiceWorkerInput::Voice(Ok(_)) => {}
@@ -975,6 +1063,11 @@ async fn run_voice_worker(
             }
         }
 
+        if !is_frame || last_checkpoint.elapsed() >= Duration::from_secs(1) {
+            update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
+                .await;
+            last_checkpoint = Instant::now();
+        }
         if active.is_some() {
             idle_deadline = None;
         } else if idle_deadline.is_none() {
@@ -982,7 +1075,15 @@ async fn run_voice_worker(
         }
     };
 
-    players.write().await.clear(guild_id);
+    if matches!(&reason, VoiceWorkerStopReason::IdleTimedOut) {
+        let mut checkpoints = checkpoints.write().await;
+        if checkpoints.get(&guild_id).is_some_and(|entry| entry.generation == generation) {
+            checkpoints.remove(&guild_id);
+        }
+    } else if active.is_some() {
+        update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
+            .await;
+    }
     if let Some(playback) = active.take() {
         playback.cancel();
     }
@@ -996,6 +1097,26 @@ async fn run_voice_worker(
     }
 
     send_stopped(&worker_events, guild_id, generation, reason).await;
+}
+
+async fn update_checkpoint(
+    checkpoints: &Checkpoints,
+    guild_id: GuildId,
+    generation: u64,
+    active: Option<&ActivePlayback>,
+    volume_percent: u8,
+) {
+    let mut checkpoints = checkpoints.write().await;
+    if let Some(entry) = checkpoints.get_mut(&guild_id)
+        && entry.generation == generation
+    {
+        entry.checkpoint.track_id = active.map(|playback| playback.track_id);
+        entry.checkpoint.position_millis = active.map_or(0, |playback| {
+            u64::try_from(playback.position.as_millis()).unwrap_or(u64::MAX)
+        });
+        entry.checkpoint.paused = active.is_some_and(|playback| playback.paused);
+        entry.checkpoint.volume_percent = volume_percent;
+    }
 }
 
 async fn start_next_playback(

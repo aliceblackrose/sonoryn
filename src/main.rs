@@ -1,6 +1,7 @@
 mod commands;
 mod gateway_control;
 mod history;
+mod persistence;
 mod state;
 mod voice_manager;
 
@@ -39,10 +40,13 @@ async fn main() -> MainResult<()> {
 
     let (gateway_control, mut gateway_controls) = mpsc::channel(GATEWAY_CONTROL_CAPACITY);
     let state = AppState::new(gateway_control);
+    let (database, saved) = persistence::Database::open().await?;
+    let checkpoints = persistence::restore(&state, saved).await;
     let (mut voice_manager, mut voice_events) = VoiceManager::new(
         state.player_manager.clone(),
         state.history_manager.clone(),
         state.resolver.clone(),
+        checkpoints.clone(),
     );
     let framework = Framework::builder(state.clone())
         .commands(command_list())
@@ -54,14 +58,24 @@ async fn main() -> MainResult<()> {
     let mut synchronized = registration == Registration::None;
     let mut bot_user_id: Option<UserId> = None;
 
+    let mut checkpoint_timer = tokio::time::interval(std::time::Duration::from_secs(2));
+    checkpoint_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+
     info!("Sonoryn Gateway connected");
 
     loop {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
+            signal = &mut shutdown => {
                 signal?;
                 info!("shutdown signal received");
                 break;
+            }
+            _ = checkpoint_timer.tick() => {
+                if let Err(error) = database.save(&state, &checkpoints).await {
+                    warn!(%error, "failed to save playback checkpoint");
+                }
             }
             control = gateway_controls.recv() => {
                 if let Some(control) = control {
@@ -88,7 +102,7 @@ async fn main() -> MainResult<()> {
 
                     voice_manager.handle_dispatch(dispatch, &mut gateway).await;
 
-                    if let TypedDispatchEvent::Ready(ready) = typed {
+                    if let TypedDispatchEvent::Ready(ready) = &typed {
                         bot_user_id = Some(ready.user.id);
                         if !synchronized {
                             framework
@@ -96,6 +110,24 @@ async fn main() -> MainResult<()> {
                                 .await?;
                             synchronized = true;
                             info!("Discord application commands synchronized");
+                        }
+                    }
+                    if let TypedDispatchEvent::GuildCreate(guild) = &typed
+                        && let Some(bot_id) = bot_user_id
+                    {
+                        let channel = checkpoints
+                            .read()
+                            .await
+                            .get(&guild.id)
+                            .map(|entry| entry.checkpoint.channel_id);
+                        if let Some(channel_id) = channel
+                            && guild.voice_states.iter().any(|voice| {
+                                voice.channel_id == Some(channel_id) && voice.user_id != bot_id
+                            })
+                        {
+                            voice_manager
+                                .restore_voice(guild.id, channel_id, &mut gateway, bot_id)
+                                .await;
                         }
                     }
                 }
@@ -128,15 +160,33 @@ async fn main() -> MainResult<()> {
         VoiceManager::reject_control(control);
     }
 
+    voice_events.close();
     voice_manager.shutdown(&mut gateway).await;
-    gateway.shutdown().await?;
     while let Some(result) = command_tasks.join_next().await {
         if let Err(error) = result {
             error!(error = %error, "command supervisor task failed during shutdown");
         }
     }
 
+    database.save(&state, &checkpoints).await?;
+    gateway.shutdown().await?;
     Ok(())
+}
+
+async fn shutdown_signal() -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }
 
 fn registration_from_env() -> MainResult<Registration> {

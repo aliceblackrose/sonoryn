@@ -2,10 +2,11 @@ use std::collections::{HashMap, VecDeque};
 
 use gloamwire::model::GuildId;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 
 use crate::media::{RequestedBy, ResolvedTrack, Track, TrackId, TrackRequest};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoopMode {
     #[default]
     Off,
@@ -14,7 +15,7 @@ pub enum LoopMode {
 }
 
 /// Read-only copy of one guild's playback state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerSnapshot {
     pub now_playing: Option<Track>,
     pub queue: Vec<Track>,
@@ -231,6 +232,31 @@ impl PlayerManager {
             .remove(&guild_id)
             .map(GuildPlayer::into_snapshot)
             .unwrap_or_default()
+    }
+
+    /// Guilds with durable queue or repeat state.
+    pub fn guild_ids(&self) -> impl Iterator<Item = GuildId> + '_ {
+        self.players.keys().copied()
+    }
+
+    /// Restore a detached snapshot without changing track IDs or queue order.
+    pub fn restore(&mut self, guild_id: GuildId, snapshot: PlayerSnapshot, mode: LoopMode) {
+        for track in snapshot.now_playing.iter().chain(&snapshot.queue) {
+            self.reserve_track_id(track.id);
+        }
+        self.players.insert(
+            guild_id,
+            GuildPlayer {
+                now_playing: snapshot.now_playing,
+                queue: snapshot.queue.into(),
+                loop_mode: mode,
+            },
+        );
+    }
+
+    /// History can contain IDs newer than the active queue.
+    pub fn reserve_track_id(&mut self, id: TrackId) {
+        self.next_track_id = self.next_track_id.max(id.get());
     }
 
     fn allocate_track_id(&mut self) -> TrackId {
