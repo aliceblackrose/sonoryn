@@ -31,6 +31,7 @@ const TOOL_VERSION_LIMIT: usize = 160;
 #[tokio::main]
 async fn main() -> MainResult<()> {
     init_tracing();
+    init_tls_provider()?;
 
     let token = env::var("DISCORD_TOKEN")
         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "DISCORD_TOKEN is required"))?;
@@ -321,9 +322,30 @@ fn reap_command_tasks(tasks: &mut JoinSet<()>) {
     }
 }
 
+// Select one process-wide provider explicitly because dependencies can enable
+// both Rustls crypto backends through Cargo feature unification.
+fn init_tls_provider() -> io::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| io::Error::other("Rustls crypto provider already initialized"))?;
+    info!("Rustls crypto provider initialized (ring)");
+    Ok(())
+}
+
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("sonoryn=info,gloamwire=info,gloam_commands=info"));
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+#[cfg(test)]
+mod tls_provider_tests {
+    #[test]
+    fn explicit_provider_allows_tls_client_config() {
+        super::init_tls_provider().expect("initialize process crypto provider");
+        let _config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+    }
 }
