@@ -98,7 +98,10 @@ pub(crate) async fn help(ctx: Context<AppState>) -> Result<()> {
             "Queue",
             "`/queue` · `/queue-page` · `/remove` · `/move` · `/shuffle` · `/loop` · `/history`",
         ),
-        ui::section("Voice and status", "`/join` · `/leave` · `/voice` · `/ping` · `/health`"),
+        ui::section(
+            "Voice and status",
+            "`/join` · `/leave` · `/voice` · `/ping` · `/health`",
+        ),
     ];
     ctx.reply_ephemeral_embed(embed).await?;
     Ok(())

@@ -32,8 +32,7 @@ pub(crate) async fn seek(
         return Ok(());
     };
     let Ok(position_millis) = u64::try_from(position.as_millis()) else {
-        ctx.reply_status("That seek position is too large.")
-            .await?;
+        ctx.reply_status("That seek position is too large.").await?;
         return Ok(());
     };
     let Some((guild_id, channel_id)) = require_voice_channel(&ctx).await? else {

@@ -66,8 +66,7 @@ pub(crate) async fn loop_mode(
             "track" => LoopMode::Track,
             "queue" => LoopMode::Queue,
             _ => {
-                ctx.reply_status("That loop mode is not supported.")
-                    .await?;
+                ctx.reply_status("That loop mode is not supported.").await?;
                 return Ok(());
             }
         };
@@ -163,10 +162,9 @@ pub(crate) async fn history(ctx: Context<AppState>) -> Result<()> {
         history.snapshot(guild_id)
     };
     let mut embed = ui::notice("Recently played", render_history(&history));
-    embed.fields.push(ui::field(
-        "Tracks in history",
-        history.len().to_string(),
-    ));
+    embed
+        .fields
+        .push(ui::field("Tracks in history", history.len().to_string()));
     ctx.reply_ephemeral_embed(embed).await?;
     Ok(())
 }

@@ -71,9 +71,10 @@ pub(super) fn track_card(status: &str, track: &Track, position: Option<usize>) -
     embed.fields = vec![
         field(
             "Duration",
-            metadata
-                .duration
-                .map_or_else(|| "Unknown".to_owned(), |duration| clock(duration.as_secs())),
+            metadata.duration.map_or_else(
+                || "Unknown".to_owned(),
+                |duration| clock(duration.as_secs()),
+            ),
         ),
         field("Source", source_name(&track.source)),
         field(
@@ -96,13 +97,16 @@ pub(super) fn queue_card(
     mode: LoopMode,
 ) -> Embed {
     let mut embed = notice(title, description);
-    let (seconds, unknown) = snapshot.queue.iter().fold(
-        (0u64, 0usize),
-        |(total, unknown), track| match track.metadata.duration {
-            Some(duration) => (total.saturating_add(duration.as_secs()), unknown),
-            None => (total, unknown + 1),
-        },
-    );
+    let (seconds, unknown) =
+        snapshot
+            .queue
+            .iter()
+            .fold((0u64, 0usize), |(total, unknown), track| {
+                match track.metadata.duration {
+                    Some(duration) => (total.saturating_add(duration.as_secs()), unknown),
+                    None => (total, unknown + 1),
+                }
+            });
     let duration = if unknown == 0 {
         clock(seconds)
     } else {
@@ -235,7 +239,11 @@ mod tests {
         let embed = notice("🎵".repeat(300), "x".repeat(5000));
         assert!(embed.title.expect("title").encode_utf16().count() <= 256);
         assert_eq!(
-            embed.description.expect("description").encode_utf16().count(),
+            embed
+                .description
+                .expect("description")
+                .encode_utf16()
+                .count(),
             4096
         );
         assert!(public_url("file:///tmp/secret").is_none());

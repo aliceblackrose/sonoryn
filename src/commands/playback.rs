@@ -221,8 +221,7 @@ pub(crate) async fn remove(
         return Ok(());
     };
     let Some(index) = queue_index(position) else {
-        ctx.reply_status("That queue position is invalid.")
-            .await?;
+        ctx.reply_status("That queue position is invalid.").await?;
         return Ok(());
     };
 
@@ -563,11 +562,7 @@ fn format_track(track: &Track) -> String {
     if let Some(duration) = track.metadata.duration {
         let _ = write!(output, " ({})", format_duration(duration.as_secs()));
     }
-    let _ = write!(
-        output,
-        " · <@{}>",
-        track.requested_by.user_id.get()
-    );
+    let _ = write!(output, " · <@{}>", track.requested_by.user_id.get());
     output
 }
 
