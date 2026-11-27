@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use gloam_commands::prelude::*;
 use gloamwire::model::{
     ApplicationCommandInteractionValue, ChannelId, GuildId, Interaction, UserId,
 };
 use sonoryn::media::{RequestedBy, ResolvedTrack, Track, TrackRequest};
-use tokio::{sync::oneshot, time::timeout};
+use tokio::sync::oneshot;
 
 use crate::{
     gateway_control::{GatewayControl, PlaybackAction, PlaybackControlResult, VoiceJoinResult},
@@ -34,24 +34,27 @@ pub(crate) async fn play_query_autocomplete(
         return Ok(Vec::new());
     }
 
+    // A pasted URL can be submitted unchanged without expanding its playlist
+    // or doing a slow media lookup before Discord's acknowledgement deadline.
+    if is_http_url(input) {
+        return Ok(typed_query_choice(input).into_iter().collect());
+    }
+
     let request = autocomplete_request(input);
-    let tracks = match timeout(
-        AUTOCOMPLETE_TIMEOUT,
-        ctx.data()
-            .resolver
-            .resolve_playlist(&request, AUTOCOMPLETE_LIMIT),
-    )
-    .await
+    let tracks = match ctx
+        .data()
+        .resolver
+        .suggest(&request, AUTOCOMPLETE_LIMIT, AUTOCOMPLETE_TIMEOUT)
+        .await
     {
-        Ok(Ok(tracks)) => tracks,
-        Ok(Err(_)) | Err(_) => return Ok(Vec::new()),
+        Ok(tracks) => tracks,
+        Err(error) => {
+            tracing::debug!(%error, "autocomplete search failed");
+            Vec::new()
+        }
     };
 
-    Ok(tracks
-        .into_iter()
-        .filter_map(autocomplete_choice)
-        .take(AUTOCOMPLETE_LIMIT)
-        .collect())
+    Ok(autocomplete_choices(input, tracks))
 }
 
 #[command(description = "Play a song or add it to the queue", guild_only)]
@@ -202,8 +205,47 @@ fn autocomplete_request(input: &str) -> TrackRequest {
     TrackRequest::new(target).expect("autocomplete input was checked as non-empty")
 }
 
+fn autocomplete_choices(input: &str, tracks: Vec<ResolvedTrack>) -> Vec<AutocompleteChoice> {
+    let mut seen = HashSet::new();
+    let mut choices: Vec<_> = tracks
+        .into_iter()
+        .filter_map(autocomplete_choice)
+        .filter(|choice| {
+            if let gloam_commands::AutocompleteChoiceValue::String(value) = &choice.value {
+                seen.insert(value.clone())
+            } else {
+                false
+            }
+        })
+        .take(AUTOCOMPLETE_LIMIT)
+        .collect();
+
+    if choices.is_empty() {
+        choices.extend(typed_query_choice(input));
+    }
+    choices
+}
+
+fn typed_query_choice(input: &str) -> Option<AutocompleteChoice> {
+    if input.trim().is_empty() || input.chars().count() > 100 {
+        return None;
+    }
+    let label = if is_http_url(input) {
+        "Play this URL".to_owned()
+    } else {
+        truncate_chars(
+            &format!("Search for: {input}"),
+            AUTOCOMPLETE_CHOICE_NAME_LIMIT,
+        )
+    };
+    Some(AutocompleteChoice::string(label, input))
+}
+
 fn autocomplete_choice(track: ResolvedTrack) -> Option<AutocompleteChoice> {
-    if track.metadata.webpage_url.chars().count() > 100 {
+    if track.metadata.title.trim().is_empty()
+        || !is_http_url(&track.metadata.webpage_url)
+        || track.metadata.webpage_url.chars().count() > 100
+    {
         return None;
     }
 
@@ -343,7 +385,34 @@ mod tests {
 
     use sonoryn::media::{ResolvedTrack, TrackMetadata, TrackSource};
 
-    use super::{AUTOCOMPLETE_LIMIT, autocomplete_choice, autocomplete_request};
+    use super::{
+        AUTOCOMPLETE_LIMIT, autocomplete_choice, autocomplete_choices, autocomplete_request,
+        typed_query_choice,
+    };
+
+    #[test]
+    fn autocomplete_falls_back_to_the_exact_typed_query() {
+        let choices = autocomplete_choices("artist song", Vec::new());
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].name, "Search for: artist song");
+        assert_eq!(
+            choices[0].value,
+            gloam_commands::AutocompleteChoiceValue::String("artist song".to_owned())
+        );
+        assert!(typed_query_choice(&"x".repeat(101)).is_none());
+        assert!(typed_query_choice("  ").is_none());
+    }
+
+    #[test]
+    fn autocomplete_preserves_a_pasted_url_without_expanding_it() {
+        let url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=example";
+        let choice = typed_query_choice(url).expect("URL choice");
+        assert_eq!(choice.name, "Play this URL");
+        assert_eq!(
+            choice.value,
+            gloam_commands::AutocompleteChoiceValue::String(url.to_owned())
+        );
+    }
 
     #[test]
     fn autocomplete_turns_free_text_into_multi_result_search() {
@@ -373,6 +442,13 @@ mod tests {
             },
             locator: "https://example.test/watch/1".to_owned(),
         };
+
+        let choices = autocomplete_choices("song", vec![track.clone(), track.clone()]);
+        assert_eq!(choices.len(), 1);
+
+        let mut invalid = track.clone();
+        invalid.metadata.title = " ".to_owned();
+        assert!(autocomplete_choice(invalid).is_none());
 
         let choice = autocomplete_choice(track).expect("choice");
         assert_eq!(choice.name, "A song — An artist");
