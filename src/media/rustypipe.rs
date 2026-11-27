@@ -114,7 +114,8 @@ impl RustyPipeResolver {
             .filter(|stream| valid_media_url(&stream.url))
             .max_by_key(|stream| stream.bitrate)
             .map(|stream| stream.url.as_str());
-        let url = audio_url.or_else(|| {
+        let url = audio_url
+            .or_else(|| {
                 player
                     .hls_manifest_url
                     .as_deref()
@@ -153,10 +154,13 @@ impl RustyPipeResolver {
         for (name, value) in &media.http_headers {
             request = request.header(name.as_str(), value.as_str());
         }
-        let response = request.send().await.map_err(|_| ResolveError::BackendFailed {
-            backend: BACKEND.to_owned(),
-            message: "media access check failed".to_owned(),
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|_| ResolveError::BackendFailed {
+                backend: BACKEND.to_owned(),
+                message: "media access check failed".to_owned(),
+            })?;
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
             tracing::warn!(status = status.as_u16(), "media access check rejected");

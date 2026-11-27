@@ -1201,7 +1201,9 @@ async fn run_voice_worker(
                         Some(DecoderEvent::Frame(_)) => unreachable!("frame handled above"),
                         None => "decoder exited without a terminal event",
                     };
-                    if !refused && should_recover(position, duration, playback.recovery_attempts) {
+                    if !refused
+                        && should_recover(position, duration, playback.recovery_attempts)
+                    {
                         let attempt = playback.recovery_attempts + 1;
                         warn!(
                             guild_id = guild_id.get(),
@@ -1392,14 +1394,15 @@ async fn run_decoder(
         Ok(media) => media,
         Err(error) => {
             warn!(%error, "media resolution failed before decoding");
-            let failure = if matches!(error, sonoryn::media::ResolveError::MediaHttpStatus(401 | 403 | 429)) {
+            let failure = if matches!(
+                error,
+                sonoryn::media::ResolveError::MediaHttpStatus(401 | 403 | 429)
+            ) {
                 PlaybackFailure::MediaRefused
             } else {
                 PlaybackFailure::MediaResolution
             };
-            let _ = events
-                .send(DecoderEvent::Failed(failure))
-                .await;
+            let _ = events.send(DecoderEvent::Failed(failure)).await;
             return;
         }
     };
