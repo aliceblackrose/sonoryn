@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use gloamwire::model::UserId;
+use serde::{Deserialize, Serialize};
 
 /// Stable identifier assigned by Sonoryn when a resolved track enters a player.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TrackId(u64);
 
 impl TrackId {
@@ -19,7 +20,7 @@ impl TrackId {
 }
 
 /// The exact user submission that produced a track resolution request.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackRequest {
     input: String,
 }
@@ -40,7 +41,7 @@ impl TrackRequest {
 }
 
 /// Discord user that requested a queued track.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RequestedBy {
     pub user_id: UserId,
 }
@@ -53,7 +54,7 @@ impl RequestedBy {
 }
 
 /// Origin service reported by the resolver.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum TrackSource {
     YouTube,
@@ -85,7 +86,7 @@ impl TrackSource {
 }
 
 /// Metadata safe to retain in queue or persistence state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackMetadata {
     pub title: String,
     pub artist: Option<String>,
@@ -109,7 +110,7 @@ pub struct ResolvedTrack {
 ///
 /// Direct playable media URLs deliberately do not live here. They are resolved
 /// on demand into [`PlayableMedia`] immediately before decode/playback.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
     pub request: TrackRequest,

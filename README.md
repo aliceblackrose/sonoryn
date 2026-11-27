@@ -112,3 +112,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for runtime ownership and dat
 ## License
 
 License selection is pending.
+
+## Persistent playback and restart recovery
+
+Sonoryn keeps a SQLite database under `$XDG_STATE_HOME/sonoryn/sonoryn.sqlite3` (default: `$HOME/.local/state/sonoryn/sonoryn.sqlite3`). Override it with `SONORYN_DATABASE_PATH` if needed. SQLite is bundled; no database server is required.
+
+Every two seconds, queue order, current track, playback history, repeat mode, channel, volume, pause state and the latest playback position are checkpointed. SIGTERM (including systemd restart) and Ctrl-C trigger a final checkpoint. On startup, a saved nonempty session reconnects after its guild becomes available if another user is present in the saved voice channel. Otherwise the queue and current track remain available for a manual join. An explicit `/leave` removes the voice recovery state and clears playback; `/stop` clears playback without starting another song on restart.
+
+A restart cannot preserve live Discord voice transport, encryption, or decoder state. Sonoryn establishes a fresh voice connection, resolves a fresh media URL and seeks to the saved position. Expect a short audio interruption and potentially a few seconds of replay after an abrupt crash. Persistent data includes track requests and Discord user/channel IDs, not bot tokens or temporary voice/media credentials. Keep the database private and back it up using SQLite's backup mechanism (or copy it while the bot is stopped).

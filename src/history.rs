@@ -32,6 +32,10 @@ impl HistoryManager {
         track
     }
 
+    pub(crate) fn guild_ids(&self) -> impl Iterator<Item = GuildId> + '_ {
+        self.histories.keys().copied()
+    }
+
     pub(crate) fn snapshot(&self, guild_id: GuildId) -> Vec<Track> {
         self.histories
             .get(&guild_id)
