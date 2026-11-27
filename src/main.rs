@@ -1,4 +1,5 @@
 mod commands;
+mod dave_provider;
 mod gateway_control;
 mod history;
 mod persistence;

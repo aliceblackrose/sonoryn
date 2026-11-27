@@ -36,7 +36,7 @@ The remaining roadmap work is reliability, richer controls, persistence, shardin
 - Sonoryn owns its Gateway loop instead of using `Framework::run()`, because music requires `GUILD_VOICE_STATES` and outbound voice-state updates.
 - Per-guild playback runs as an actor/task with explicit commands rather than shared mutable playback state scattered across command handlers.
 - Source resolution, decoding, DAVE media protection, RTP transport, and queue policy remain separate layers.
-- No bespoke cryptography in Sonoryn. DAVE belongs in Gloamwire behind a dedicated implementation boundary.
+- No bespoke cryptography in Sonoryn. The application-owned adapter delegates MLS and media cryptography to native libdave; Gloamwire owns voice framing and transport.
 - Direct/signed media URLs are ephemeral and never stored in queue state.
 
 ## Prototype data flow
@@ -120,3 +120,9 @@ Sonoryn keeps a SQLite database under `$XDG_STATE_HOME/sonoryn/sonoryn.sqlite3` 
 Every two seconds, queue order, current track, playback history, repeat mode, channel, volume, pause state and the latest playback position are checkpointed. SIGTERM (including systemd restart) and Ctrl-C trigger a final checkpoint. On startup, a saved nonempty session reconnects after its guild becomes available if another user is present in the saved voice channel. Otherwise the queue and current track remain available for a manual join. An explicit `/leave` removes the voice recovery state and clears playback; `/stop` clears playback without starting another song on restart.
 
 A restart cannot preserve live Discord voice transport, encryption, or decoder state. Sonoryn establishes a fresh voice connection, resolves a fresh media URL and seeks to the saved position. Expect a short audio interruption and potentially a few seconds of replay after an abrupt crash. Persistent data includes track requests and Discord user/channel IDs, not bot tokens or temporary voice/media credentials. Keep the database private and back it up using SQLite's backup mechanism (or copy it while the bot is stopped).
+
+### DAVE backend migration
+
+Sonoryn tracks Gloamwire's `main` branch and uses its backend-neutral DAVE interface. The application supplies a pinned `libdave-rs` adapter to Discord's native libdave; it requires a C++ toolchain, pkg-config, and OpenSSL 3 development headers. Voice joins require DAVE protocol version 1 or higher and wait for an encryption ratchet before starting playback. The old bundled Davey feature is not used. Existing lockfiles require `cargo update -p gloamwire` to advance the upstream revision.
+
+This migration is experimental pending native dependency review, CI, and live Discord voice interoperability testing; do not deploy the draft as a production build.
