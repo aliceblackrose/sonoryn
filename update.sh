@@ -25,7 +25,7 @@ esac
 (( EUID != 0 )) || die 'Run as the same normal user who installed Sonoryn, not sudo.'
 [[ -x "$BINARY" && -x "$HOME/.local/bin/sonoryn" ]] || die 'Install Sonoryn with install.sh first.'
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$HOME/.local/bin:$PATH"
-for tool in git rustup install flock cc c++ pkg-config ffmpeg yt-dlp; do
+for tool in git rustup install flock cc c++ pkg-config ffmpeg; do
     command -v "$tool" >/dev/null || die "Missing dependency: $tool. Rerun install.sh."
 done
 
@@ -40,7 +40,6 @@ trap cleanup EXIT
 trap 'printf "[sonoryn] Update failed at line %s.\n" "$LINENO" >&2' ERR
 
 log 'Checking runtime dependencies...'
-yt-dlp --version
 ffmpeg -version >/dev/null
 encoders=$(ffmpeg -hide_banner -encoders 2>&1)
 grep -Eq '[[:space:]]libopus[[:space:]]' <<< "$encoders" || die 'FFmpeg lacks libopus encoding support.'

@@ -47,6 +47,10 @@ jobs:
           print(f"Gloamwire dependency identity: {identities[0]}")
           PY
 
+      - name: Run default-feature tests
+        if: ${{ !cancelled() }}
+        run: cargo test --all-targets
+
       - name: Run tests
         if: ${{ !cancelled() }}
         run: cargo test --all-targets --all-features

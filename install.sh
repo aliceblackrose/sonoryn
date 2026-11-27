@@ -36,24 +36,23 @@ if (( ! SKIP_DEPS )); then
     if has apt-get; then
         sudo apt-get update
         sudo apt-get install -y git curl ca-certificates build-essential \
-            pkg-config cmake libssl-dev ffmpeg yt-dlp
+            pkg-config cmake libssl-dev ffmpeg
     elif has dnf; then
         sudo dnf install -y git curl ca-certificates gcc gcc-c++ make \
-            pkgconf-pkg-config cmake openssl-devel ffmpeg-free yt-dlp
+            pkgconf-pkg-config cmake openssl-devel ffmpeg-free
     elif has pacman; then
         sudo pacman -S --needed base-devel git curl ca-certificates \
-            pkgconf cmake openssl ffmpeg yt-dlp
+            pkgconf cmake openssl ffmpeg
     else
-        die 'Unsupported package manager. Install git, curl, a C/C++ toolchain, pkg-config, cmake, OpenSSL headers, FFmpeg with libopus, and yt-dlp; then rerun with --skip-deps.'
+        die 'Unsupported package manager. Install git, curl, a C/C++ toolchain, pkg-config, cmake, OpenSSL headers, and FFmpeg with libopus; then rerun with --skip-deps.'
     fi
 fi
 
-for tool in git curl cc c++ pkg-config ffmpeg yt-dlp install; do
+for tool in git curl cc c++ pkg-config ffmpeg install; do
     has "$tool" || die "Missing dependency: $tool"
 done
 
 log 'Checking audio runtime dependencies...'
-yt-dlp --version
 ffmpeg -version >/dev/null
 encoders=$(ffmpeg -hide_banner -encoders 2>&1)
 if ! grep -Eq '[[:space:]]libopus[[:space:]]' <<< "$encoders"; then

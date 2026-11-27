@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gloamwire::{Cache, CacheConfig};
 use sonoryn::{
-    media::{TrackResolver, YtDlpResolver},
+    media::{RustyPipeResolver, TrackResolver},
     player::PlayerManager,
 };
 use tokio::sync::{RwLock, mpsc};
@@ -26,7 +26,7 @@ impl AppState {
             gateway_control,
             player_manager: Arc::new(RwLock::new(PlayerManager::new())),
             history_manager: Arc::new(RwLock::new(HistoryManager::new())),
-            resolver: Arc::new(YtDlpResolver::new()),
+            resolver: Arc::new(RustyPipeResolver::new()),
         }
     }
 }

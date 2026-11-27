@@ -8,7 +8,7 @@ The project is intentionally protocol-first. Sonoryn does not introduce a second
 
 **Working-prototype stage.**
 
-The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves URLs/free-text searches with `yt-dlp`, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path. Connected guild voice workers automatically disconnect after five minutes with no active track and an empty queue; paused playback remains active and is not considered idle.
+The prototype owns the Discord Gateway loop, joins normal voice channels through Gloamwire's DAVE voice session, resolves YouTube URLs/free-text searches with RustyPipe, transcodes media to 48 kHz stereo 20 ms Opus frames with FFmpeg, and sends those frames through Gloamwire's DAVE → RTP → transport-encryption path. Connected guild voice workers automatically disconnect after five minutes with no active track and an empty queue; paused playback remains active and is not considered idle.
 
 Implemented prototype commands:
 
@@ -22,7 +22,7 @@ Implemented prototype commands:
 - `/nowplaying` — open the interactive player for the active track.
 - `/player` — open the private, button-driven music dashboard.
 - `/join` and `/leave` — explicitly manage the guild voice session.
-- `/health` — recheck the local `yt-dlp` and FFmpeg runtime dependencies.
+- `/health` — report the native resolver and check FFmpeg / optional yt-dlp.
 - `/ping` and `/voice` — basic Gateway/voice-state diagnostics.
 
 Queue-mutating commands use the same authoritative same-voice-channel check as playback controls. Their positions refer only to the queued entries shown under `Queue:`; the current track is not position 1.
@@ -59,13 +59,13 @@ The interactive UI uses Gloamwire's message-button API from [PR #47](https://git
 ```text
 /play <query>
     │
-    ├─ TrackResolver (yt-dlp metadata)
+    ├─ TrackResolver (RustyPipe metadata)
     │      └─ durable Track metadata / public locator
     │
     ├─ per-guild PlayerManager FIFO
     │
     └─ Voice worker
-           ├─ yt-dlp direct-media refresh
+           ├─ RustyPipe direct-media refresh
            ├─ bounded FFmpeg decoder task
            ├─ 48 kHz stereo / 20 ms Opus
            ├─ VoiceFramePacer
@@ -80,11 +80,10 @@ The decoder task communicates with the voice worker through a two-frame bounded 
 Install:
 
 - Rust 1.98 (the included `rust-toolchain.toml` selects it);
-- `yt-dlp` available on `PATH`;
 - FFmpeg with `libopus` support available as `ffmpeg` on `PATH`;
 - a Discord application/bot with access to the target guild and permission to connect/speak in the target voice channel.
 
-Sonoryn performs a startup preflight for `yt-dlp --version` and `ffmpeg -version` before opening the Discord connection. A missing or non-runnable dependency therefore fails startup with an actionable error instead of failing only when the first track starts decoding.
+Sonoryn performs a startup preflight for `ffmpeg -version`. RustyPipe is linked into the application; no yt-dlp executable is required for the default build. Native resolution supports YouTube watch, short, live, playlist and YouTube Music watch URLs, as well as free-text search. Other source services require the optional legacy backend.
 
 Configure:
 
@@ -101,6 +100,14 @@ RUST_LOG=sonoryn=info,gloamwire=info,gloam_commands=info
 ```bash
 cargo run
 ```
+
+For optional legacy extraction, install `yt-dlp` separately and run:
+
+```bash
+cargo run --features yt-dlp-fallback
+```
+
+This feature attempts the native resolver first, then yt-dlp on failure within the remaining resolution budget. It does not require yt-dlp at startup. `/health` reports whether the optional executable is available. RustyPipe's upstream extractor may fail on some YouTube content; live media access is not guaranteed. Only resolve and play content you are authorized to use.
 
 Then join a normal voice channel and use, for example:
 
@@ -126,7 +133,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for runtime ownership and dat
 
 ## License
 
-License selection is pending.
+License selection is pending. RustyPipe 0.11.4 is GPL-3.0; review the resulting combined-work distribution obligations before distributing a Sonoryn binary. This migration does not select a license for Sonoryn.
 
 ## Persistent playback and restart recovery
 
