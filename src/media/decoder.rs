@@ -169,7 +169,7 @@ impl FfmpegOpusDecoder {
             .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .arg("-nostdin")
             .arg("-hide_banner")
             .arg("-loglevel")
@@ -233,6 +233,9 @@ impl FfmpegOpusDecoder {
             source,
         })?;
         let stdout = child.stdout.take().ok_or(DecodeError::MissingStdout)?;
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(drain_decoder_stderr(stderr));
+        }
 
         Ok(FfmpegOpusStream {
             child,
@@ -308,6 +311,61 @@ impl FfmpegOpusStream {
         }
         self.finished = true;
         Ok(())
+    }
+}
+
+// Drain stderr concurrently so FFmpeg never blocks on a full diagnostic pipe.
+// Only fixed categories are logged: FFmpeg can print signed media URLs.
+async fn drain_decoder_stderr(mut stderr: impl AsyncRead + Unpin) {
+    let mut buffer = [0_u8; 4096];
+    let mut window = Vec::with_capacity(4352);
+    let mut saw_output = false;
+    let mut reported = false;
+    while let Ok(count) = stderr.read(&mut buffer).await {
+        if count == 0 {
+            break;
+        }
+        saw_output = true;
+        if !reported {
+            window.extend_from_slice(&buffer[..count]);
+            if let Some(reason) = decoder_stderr_reason(&String::from_utf8_lossy(&window)) {
+                tracing::warn!(reason, "FFmpeg reported an error");
+                reported = true;
+            }
+            if window.len() > 256 {
+                window.drain(..window.len() - 256);
+            }
+        }
+    }
+    if saw_output && !reported {
+        tracing::warn!("FFmpeg reported an unclassified error (raw output suppressed)");
+    }
+}
+
+fn decoder_stderr_reason(output: &str) -> Option<&'static str> {
+    let output = output.to_ascii_lowercase();
+    if output.contains("403 forbidden") || output.contains("http error 403") {
+        Some("HTTP 403: media request refused")
+    } else if output.contains("429") && output.contains("too many requests") {
+        Some("HTTP 429: media request rate limited")
+    } else if output.contains("404 not found") || output.contains("http error 404") {
+        Some("HTTP 404: media unavailable")
+    } else if output.contains("unknown encoder") || output.contains("encoder not found") {
+        Some("audio encoder unavailable")
+    } else if output.contains("protocol not found") || output.contains("not on whitelist") {
+        Some("input protocol unavailable or disallowed")
+    } else if output.contains("network is unreachable") || output.contains("connection refused") {
+        Some("media network connection failed")
+    } else if output.contains("timed out") || output.contains("timeout") {
+        Some("media network or I/O timeout")
+    } else if output.contains("invalid data found") {
+        Some("invalid input media")
+    } else if output.contains("matches no streams") {
+        Some("input has no selected audio stream")
+    } else if output.contains("certificate") || output.contains("tls handshake") {
+        Some("TLS connection failed")
+    } else {
+        None
     }
 }
 
@@ -476,9 +534,22 @@ mod tests {
     use gloamwire::voice::VoiceOpusFrameDuration;
 
     use super::{
-        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, format_seek_offset,
-        render_http_headers,
+        EncodedOpusFrame, FfmpegDecodeOptions, OggPacketReader, decoder_stderr_reason,
+        format_seek_offset, render_http_headers,
     };
+
+    #[test]
+    fn decoder_diagnostics_do_not_expose_signed_urls() {
+        assert_eq!(
+            decoder_stderr_reason("https://example.com/?sig=secret: HTTP error 403 Forbidden"),
+            Some("HTTP 403: media request refused")
+        );
+        assert_eq!(
+            decoder_stderr_reason("Unknown encoder 'libopus'"),
+            Some("audio encoder unavailable")
+        );
+        assert_eq!(decoder_stderr_reason("https://example.com/?sig=secret"), None);
+    }
 
     #[tokio::test]
     async fn reads_multiple_packets_from_one_ogg_page() {
