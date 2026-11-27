@@ -18,7 +18,7 @@ use gloamwire::{
 };
 use sonoryn::{
     media::{EncodedOpusFrame, FfmpegDecodeOptions, FfmpegOpusDecoder, TrackResolver},
-    player::{LoopMode, PlayerManager},
+    player::{LoopMode, PlayerManager, QUEUE_CAPACITY_MESSAGE},
 };
 use tokio::{
     sync::{RwLock, mpsc, oneshot},
@@ -38,6 +38,8 @@ use crate::{
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+// Pending joins and live workers share one admission budget.
+const MAX_VOICE_SESSIONS: usize = 64;
 const VOICE_COMMAND_CAPACITY: usize = 16;
 const VOICE_EVENT_CAPACITY: usize = 64;
 const DECODER_FRAME_CAPACITY: usize = 2;
@@ -396,6 +398,13 @@ impl VoiceManager {
             let _ = response.send(VoiceJoinResult::InProgress {
                 channel_id: pending.channel_id,
             });
+            return;
+        }
+
+        if self.pending.len().saturating_add(self.workers.len()) >= MAX_VOICE_SESSIONS {
+            let _ = response.send(VoiceJoinResult::Failed(
+                "Sonoryn is at voice session capacity. Try again later.".to_owned(),
+            ));
             return;
         }
 
@@ -933,23 +942,15 @@ async fn run_voice_worker(
                             continue;
                         };
 
-                        let current = {
-                            let players = players.read().await;
-                            players.snapshot(guild_id).now_playing
-                        };
-                        if let Some(playback) = active.take() {
-                            let speaking = playback.speaking;
-                            playback.cancel();
-                            if speaking
-                                && let Err(error) =
-                                    voice_commands.send(VoiceCommand::FinishSpeaking).await
-                            {
-                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
-                            }
-                        }
-
                         {
                             let mut players = players.write().await;
+                            if !players.can_enqueue(guild_id, 1) {
+                                let _ = response.send(PlaybackControlResult::Failed(
+                                    QUEUE_CAPACITY_MESSAGE.to_owned(),
+                                ));
+                                continue;
+                            }
+                            let current = players.snapshot(guild_id).now_playing;
                             if let Some(current) = current
                                 && players.finish_current(guild_id, current.id)
                             {
@@ -960,6 +961,16 @@ async fn run_voice_worker(
                             let _ = players.move_queued(guild_id, position - 1, 0);
                         }
                         let _ = history.write().await.pop_latest(guild_id);
+                        if let Some(playback) = active.take() {
+                            let speaking = playback.speaking;
+                            playback.cancel();
+                            if speaking
+                                && let Err(error) =
+                                    voice_commands.send(VoiceCommand::FinishSpeaking).await
+                            {
+                                break VoiceWorkerStopReason::VoiceFailed(error.to_string());
+                            }
+                        }
                         active = start_next_playback(
                             guild_id,
                             &players,

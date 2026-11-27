@@ -4,7 +4,10 @@ use gloam_commands::prelude::*;
 use gloamwire::model::{
     ApplicationCommandInteractionValue, ChannelId, Embed, GuildId, Interaction, UserId,
 };
-use sonoryn::media::{RequestedBy, ResolvedTrack, TrackRequest};
+use sonoryn::{
+    media::{RequestedBy, ResolvedTrack, TrackRequest},
+    player::QUEUE_CAPACITY_MESSAGE,
+};
 use tokio::sync::oneshot;
 
 use super::{panel, ui};
@@ -128,6 +131,9 @@ pub(super) async fn enqueue_card(
     }
     let (track, queue_position) = {
         let mut players = state.player_manager.write().await;
+        if !players.can_enqueue(guild_id, 1) {
+            return notice(QUEUE_CAPACITY_MESSAGE.to_owned());
+        }
         players.enqueue_resolved(guild_id, request, RequestedBy::new(user_id), resolved)
     };
     match playback_control(state, guild_id, channel_id, PlaybackAction::Wake).await {

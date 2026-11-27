@@ -114,7 +114,7 @@ Sonoryn is built in vertical slices, but protocol prerequisites are completed be
 - [ ] Re-run main-Gateway rendezvous when voice credentials become invalid.
 - [ ] Source retry classification.
 - [ ] Decoder crash handling.
-- [ ] Bounded queues, resolution concurrency, and guild player counts.
+- [x] Bound new queue admissions, resolver worker concurrency, and simultaneous pending/active voice sessions.
 - [ ] Metrics for command latency, resolve latency, startup latency, underruns, skips, failures, and reconnects.
 - [ ] Credential/media URL redaction tests.
 - [ ] Integration fixtures for player state transitions.

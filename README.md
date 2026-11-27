@@ -146,3 +146,7 @@ This migration is experimental pending native dependency review, CI, and live Di
 ### Resolver network configuration
 
 By default, the HTTP resolver uses the system's normal address-family selection. If your hosting provider has broken or incorrectly geolocated IPv6 connectivity, set `SONORYN_RESOLVER_IPV4_ONLY=1` in the existing Sonoryn environment file and restart. This restricts Strawcore's HTTP client and FFmpeg HTTP input connections to IPv4; it does not alter host networking or Discord transport. The FFmpeg build must support the TCP protocol's `local_addr` option (`ffmpeg -h protocol=tcp`). Contact your provider about incorrect IP geolocation. This setting does not guarantee media availability.
+
+### Runtime capacity limits
+
+Sonoryn admits up to 250 outstanding tracks per guild (including the currently playing track), 10,000 across all guilds, and 64 simultaneous pending or established voice sessions. These are fixed defaults in the source. Playlist additions are all-or-nothing at capacity, and history replay is subject to the same queue limits. Existing saved queues are not truncated; oversized queues can drain normally but cannot grow until capacity is available. These limits are admission safeguards, not a guarantee of host capacity.
