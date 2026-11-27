@@ -233,7 +233,10 @@ fn typed_query_choice(input: &str) -> Option<AutocompleteChoice> {
     let label = if is_http_url(input) {
         "Play this URL".to_owned()
     } else {
-        truncate_chars(&format!("Search for: {input}"), AUTOCOMPLETE_CHOICE_NAME_LIMIT)
+        truncate_chars(
+            &format!("Search for: {input}"),
+            AUTOCOMPLETE_CHOICE_NAME_LIMIT,
+        )
     };
     Some(AutocompleteChoice::string(label, input))
 }
