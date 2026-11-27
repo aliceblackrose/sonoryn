@@ -148,7 +148,10 @@ fn database_path() -> DbResult<PathBuf> {
 }
 
 fn prepare_path(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -210,7 +213,10 @@ fn write(connection: &mut Connection, saved: &[GuildState]) -> DbResult<()> {
     for guild in saved {
         transaction.execute(
             "INSERT INTO guild_state (guild_id, snapshot) VALUES (?1, ?2)",
-            params![guild.guild_id.get().to_string(), serde_json::to_string(guild)?],
+            params![
+                guild.guild_id.get().to_string(),
+                serde_json::to_string(guild)?
+            ],
         )?;
     }
     transaction.commit()?;

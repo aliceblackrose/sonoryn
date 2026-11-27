@@ -58,7 +58,9 @@ struct VoiceWorkerServices {
 }
 
 enum VoiceWorkerCommand {
-    Shutdown { preserve: bool },
+    Shutdown {
+        preserve: bool,
+    },
     Playback {
         action: PlaybackAction,
         response: oneshot::Sender<PlaybackControlResult>,
@@ -690,7 +692,11 @@ async fn run_voice_worker(
         let restored = resume.filter(|state| state.track_id == Some(track.id));
         let position = restored.map_or(Duration::ZERO, |state| {
             let position = Duration::from_millis(state.position_millis);
-            if track.metadata.duration.is_some_and(|duration| position >= duration) {
+            if track
+                .metadata
+                .duration
+                .is_some_and(|duration| position >= duration)
+            {
                 Duration::ZERO
             } else {
                 position
@@ -730,12 +736,21 @@ async fn run_voice_worker(
             }
         };
 
-        let is_frame = matches!(&input, VoiceWorkerInput::Decoder(Some(DecoderEvent::Frame(_))));
+        let is_frame = matches!(
+            &input,
+            VoiceWorkerInput::Decoder(Some(DecoderEvent::Frame(_)))
+        );
         match input {
             VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Shutdown { preserve })) => {
                 if preserve {
-                    update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
-                        .await;
+                    update_checkpoint(
+                        &checkpoints,
+                        guild_id,
+                        generation,
+                        active.as_ref(),
+                        volume_percent,
+                    )
+                    .await;
                 } else {
                     players.write().await.clear(guild_id);
                 }
@@ -753,8 +768,14 @@ async fn run_voice_worker(
                 break VoiceWorkerStopReason::Requested;
             }
             VoiceWorkerInput::Command(None) => {
-                update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
-                    .await;
+                update_checkpoint(
+                    &checkpoints,
+                    guild_id,
+                    generation,
+                    active.as_ref(),
+                    volume_percent,
+                )
+                .await;
                 break VoiceWorkerStopReason::Requested;
             }
             VoiceWorkerInput::Command(Some(VoiceWorkerCommand::Playback { action, response })) => {
@@ -948,8 +969,14 @@ async fn run_voice_worker(
                         }
                     }
                 };
-                update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
-                    .await;
+                update_checkpoint(
+                    &checkpoints,
+                    guild_id,
+                    generation,
+                    active.as_ref(),
+                    volume_percent,
+                )
+                .await;
                 let _ = response.send(result);
             }
             VoiceWorkerInput::Voice(Ok(_)) => {}
@@ -1064,8 +1091,14 @@ async fn run_voice_worker(
         }
 
         if !is_frame || last_checkpoint.elapsed() >= Duration::from_secs(1) {
-            update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
-                .await;
+            update_checkpoint(
+                &checkpoints,
+                guild_id,
+                generation,
+                active.as_ref(),
+                volume_percent,
+            )
+            .await;
             last_checkpoint = Instant::now();
         }
         if active.is_some() {
@@ -1077,12 +1110,21 @@ async fn run_voice_worker(
 
     if matches!(&reason, VoiceWorkerStopReason::IdleTimedOut) {
         let mut checkpoints = checkpoints.write().await;
-        if checkpoints.get(&guild_id).is_some_and(|entry| entry.generation == generation) {
+        if checkpoints
+            .get(&guild_id)
+            .is_some_and(|entry| entry.generation == generation)
+        {
             checkpoints.remove(&guild_id);
         }
     } else if active.is_some() {
-        update_checkpoint(&checkpoints, guild_id, generation, active.as_ref(), volume_percent)
-            .await;
+        update_checkpoint(
+            &checkpoints,
+            guild_id,
+            generation,
+            active.as_ref(),
+            volume_percent,
+        )
+        .await;
     }
     if let Some(playback) = active.take() {
         playback.cancel();
